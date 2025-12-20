@@ -1,0 +1,60 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Xcode
+*.xcuserstate
+*.xcuserdatad
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Build artifacts
+build/
+*.o
+*.a
+*.dylib
+*.framework
+
+# Swift
+*.swiftdoc
+*.swiftmodule
+*.swiftsourceinfo
+
+# Debug logs
+.cursor/debug.log
+*.log
+
+# Test outputs
+test_output.txt
+test_outputs/
+test_results*.txt
+
+# Package resolved (can be regenerated)
+Package.resolved
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+

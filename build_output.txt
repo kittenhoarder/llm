@@ -1,0 +1,39 @@
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin GenerateDoccReference
+Building for debugging...
+[2/7] Write sources
+[4/7] Write swift-version--58304C5D6DBC2206.txt
+[6/12] Compiling FoundationChatCore CodeAnalysisAgent.swift
+[7/13] Compiling FoundationChatCore WebSearchAgent.swift
+[8/13] Compiling FoundationChatCore DataAnalysisAgent.swift
+[9/13] Emitting module FoundationChatCore
+[10/13] Compiling FoundationChatCore FileReaderAgent.swift
+[11/13] Compiling FoundationChatCore AgentService.swift
+[12/38] Compiling FoundationChat DuckDuckGoError.swift
+[13/38] Compiling FoundationChat DuckDuckGoFoundationTool.swift
+[14/38] Compiling FoundationChat DuckDuckGoClient.swift
+[15/38] Compiling FoundationChat DuckDuckGoTool.swift
+[16/38] Emitting module FoundationChat
+[17/38] Compiling FoundationChat FoundationChat.swift
+[18/38] Compiling FoundationChat Models.swift
+[18/38] Write Objects.LinkFileList
+[20/38] Compiling FoundationChatiOS ChatView.swift
+[21/38] Compiling FoundationChatiOS ContentView.swift
+[22/38] Compiling FoundationChatiOS ConversationListView.swift
+[23/38] Compiling FoundationChatiOS ChatViewModel.swift
+[24/38] Compiling FoundationChatiOS AgentSelectionView.swift
+[25/38] Emitting module FoundationChatiOS
+[26/38] Compiling FoundationChatiOS FoundationChatiOSApp.swift
+[27/38] Compiling FoundationChatiOS AgentConfigurationView.swift
+[28/38] Compiling FoundationChatMac ContentView.swift
+[29/38] Compiling FoundationChatMac SettingsView.swift
+[29/38] Linking foundation-chat
+[30/38] Applying foundation-chat
+[32/38] Compiling FoundationChatMac ConversationListView.swift
+[33/38] Emitting module FoundationChatMac
+[34/38] Compiling FoundationChatMac FoundationChatMacApp.swift
+[35/38] Compiling FoundationChatMac AgentSelectionView.swift
+[36/38] Compiling FoundationChatMac ChatView.swift
+[37/38] Compiling FoundationChatMac AgentConfigurationView.swift
+[38/38] Compiling FoundationChatMac ChatViewModel.swift
+Build complete! (2.24s)
