@@ -35,8 +35,8 @@ public actor ResultSummarizer {
             let toolResults = result.toolCalls.compactMap { toolCall -> String? in
                 guard let result = toolCall.result else { return nil }
                 // Truncate very long tool results
-                if result.count > 200 {
-                    return "\(toolCall.toolName): \(result.prefix(200))..."
+                if result.count > AppConstants.toolResultTruncationLength {
+                    return "\(toolCall.toolName): \(result.prefix(AppConstants.toolResultTruncationLength))..."
                 }
                 return "\(toolCall.toolName): \(result)"
             }

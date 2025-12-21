@@ -7,6 +7,7 @@
 
 import Foundation
 import FoundationModels
+import UniformTypeIdentifiers
 
 /// Availability status of the language model
 @available(macOS 26.0, iOS 26.0, *)
@@ -132,6 +133,58 @@ public actor ModelService {
         
         print("[DEBUG ModelService] Created LanguageModelSession with \(trackedTools.count) tools")
         self.session = LanguageModelSession(tools: trackedTools)
+    }
+    
+    /// Send a message with image attachments and get a response
+    /// - Parameters:
+    ///   - message: The user's message text
+    ///   - imagePaths: Array of image file paths to include
+    /// - Returns: The model's response
+    /// - Throws: Error if model is unavailable or request fails
+    /// Note: This method handles images by including them in the prompt.
+    /// The exact API for image segments may need adjustment based on FoundationModels implementation.
+    public func respond(to message: String, withImages imagePaths: [String]) async throws -> ModelResponse {
+        guard let session = session, let sessionId = currentSessionId else {
+            print("[DEBUG ModelService] No session or sessionId, using default session")
+            let defaultSession = LanguageModelSession(tools: [])
+            // For images, include image references in the message
+            let imageRefs = imagePaths.map { "[Image: \($0)]" }.joined(separator: "\n")
+            let fullMessage = "\(message)\n\n\(imageRefs)"
+            let response = try await defaultSession.respond(to: fullMessage)
+            return ModelResponse(content: response.content)
+        }
+        
+        print("[DEBUG ModelService] respond(withImages:) called with \(imagePaths.count) images, sessionId: \(sessionId)")
+        
+        // Clear previous tool calls for this session before making the request
+        await tracker.clearSession(sessionId)
+        
+        // For now, include image references in the text message
+        // TODO: Update to use proper Transcript.ImageSegment when API is confirmed
+        let imageRefs = imagePaths.map { "[Image file: \(URL(fileURLWithPath: $0).lastPathComponent)]" }.joined(separator: "\n")
+        let fullMessage = "\(message)\n\nAttached images:\n\(imageRefs)"
+        
+        print("[DEBUG ModelService] Calling session.respond() with image references...")
+        let response = try await session.respond(to: fullMessage)
+        print("[DEBUG ModelService] session.respond() completed")
+        
+        // Extract tool calls from tracker
+        var toolNames = await tracker.getUniqueToolNames(for: sessionId)
+        
+        // Fallback: If no tools were tracked but we have tools available, try to infer from content
+        if toolNames.isEmpty {
+            let availableToolNames = tools.map { $0.name }
+            let inferred = ToolUsageInference.inferToolUsage(from: response.content, availableTools: availableToolNames)
+            if !inferred.isEmpty {
+                toolNames = inferred
+            }
+        }
+        
+        let toolCalls = toolNames.map { toolName in
+            ToolCall(toolName: toolName, arguments: "")
+        }
+        
+        return ModelResponse(content: response.content, toolCalls: toolCalls)
     }
     
     /// Send a message and get a response (non-streaming)
@@ -307,9 +360,49 @@ public actor ModelService {
         for message in messages {
             switch message.role {
             case .user:
-                // Create a Transcript.Prompt with text segment
-                let textSegment = Transcript.TextSegment(content: message.content)
-                let prompt = Transcript.Prompt(segments: [.text(textSegment)])
+                // Create segments for this prompt
+                var segments: [Transcript.Segment] = []
+                
+                // Add text segment if there's content
+                if !message.content.isEmpty {
+                    let textSegment = Transcript.TextSegment(content: message.content)
+                    segments.append(.text(textSegment))
+                }
+                
+                // Add image segments for any image attachments
+                // Note: Image segment support will be added when FoundationModels API is confirmed
+                // For now, we include image references in the text content
+                var imageReferences: [String] = []
+                for attachment in message.attachments {
+                    // Check if attachment is an image
+                    if let mimeType = attachment.mimeType,
+                       let utType = UTType(mimeType: mimeType),
+                       utType.conforms(to: UTType.image) {
+                        imageReferences.append(attachment.originalName)
+                    }
+                }
+                
+                // If we have image references but no text content, add them to the text
+                if !imageReferences.isEmpty && message.content.isEmpty {
+                    let imageText = "Images attached: \(imageReferences.joined(separator: ", "))"
+                    let textSegment = Transcript.TextSegment(content: imageText)
+                    segments.append(.text(textSegment))
+                } else if !imageReferences.isEmpty {
+                    // Append image references to existing content
+                    let combinedContent = "\(message.content)\n\n[Images: \(imageReferences.joined(separator: ", "))]"
+                    // Replace the text segment with the combined content
+                    segments.removeAll { if case .text = $0 { return true } else { return false } }
+                    let textSegment = Transcript.TextSegment(content: combinedContent)
+                    segments.append(.text(textSegment))
+                }
+                
+                // If no segments were created, add an empty text segment
+                if segments.isEmpty {
+                    let textSegment = Transcript.TextSegment(content: message.content.isEmpty ? "" : message.content)
+                    segments.append(.text(textSegment))
+                }
+                
+                let prompt = Transcript.Prompt(segments: segments)
                 entries.append(.prompt(prompt))
             case .assistant:
                 // Create a Transcript.Response with text segment
@@ -326,6 +419,7 @@ public actor ModelService {
         
         return Transcript(entries: entries)
     }
+    
     
     /// Send a message and stream the response
     /// - Parameter message: The user's message

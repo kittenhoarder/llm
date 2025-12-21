@@ -543,6 +543,7 @@ struct InputArea: View {
                         )
                         .focused(isInputFocused)
                         .frame(minHeight: 40, maxHeight: 180)
+                        .allowsHitTesting(true) // Allow hit testing for text editing
                         
                         if messageText.isEmpty {
                             Text("Message")
@@ -559,6 +560,7 @@ struct InputArea: View {
                         RoundedRectangle(cornerRadius: 8)
                             .stroke(isDragOver ? Theme.accent : Theme.border, lineWidth: isDragOver ? 2 : 1)
                     )
+                    .contentShape(Rectangle()) // Make entire area droppable
                     .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
                         handleFileDrop(providers: providers)
                     }
@@ -597,6 +599,8 @@ struct InputArea: View {
             return false
         }
         
+        // Prevent default paste behavior by returning true immediately
+        // This tells SwiftUI we're handling the drop
         Task {
             for provider in providers {
                 guard provider.hasItemConformingToTypeIdentifier("public.file-url") else { continue }
@@ -613,6 +617,16 @@ struct InputArea: View {
                             showError = true
                         }
                         continue
+                    }
+                    
+                    // Check if this looks like a file path that was pasted as text
+                    // If the message text ends with this path, remove it
+                    await MainActor.run {
+                        let urlPath = url.path
+                        if messageText.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(urlPath) {
+                            // Remove the pasted path from text
+                            messageText = String(messageText.dropLast(urlPath.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                        }
                     }
                     
                     do {
@@ -635,7 +649,7 @@ struct InputArea: View {
             }
         }
         
-        return true
+        return true // Return true to indicate we handled the drop and prevent default behavior
     }
 }
 
@@ -676,6 +690,9 @@ struct TextEditorWithEnterHandler: NSViewRepresentable {
         textView.isEditable = true
         textView.isSelectable = true
         textView.allowsUndo = true
+        
+        // Disable automatic link detection to prevent file paths from being auto-detected
+        textView.isAutomaticLinkDetectionEnabled = false
         
         // Add padding to match placeholder text margins (16px horizontal, 12px vertical)
         textView.textContainerInset = NSSize(width: 16, height: 12)
@@ -753,6 +770,7 @@ struct TextEditorWithEnterHandler: NSViewRepresentable {
             self.parent = parent
         }
         
+        
         @MainActor
         func updateHeight() {
             guard let textView = textView, let scrollView = scrollView, let customScrollView = customScrollView else { return }
@@ -817,6 +835,8 @@ struct TextEditorWithEnterHandler: NSViewRepresentable {
                     return true // Prevent default behavior
                 }
             }
+            
+            
             return false
         }
     }

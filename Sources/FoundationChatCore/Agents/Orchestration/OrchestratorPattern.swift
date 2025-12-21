@@ -68,10 +68,30 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         print("🎯 OrchestratorPattern: Starting execution for task '\(task.description.prefix(50))...'")
         
+        // Check if smart delegation is enabled (default: true if key doesn't exist)
+        let smartDelegationEnabled: Bool
+        if UserDefaults.standard.object(forKey: "smartDelegation") != nil {
+            smartDelegationEnabled = UserDefaults.standard.bool(forKey: "smartDelegation")
+        } else {
+            smartDelegationEnabled = true // Default to enabled
+        }
+        if smartDelegationEnabled {
+            // Step 0: Decision step - should we delegate or respond directly?
+            let shouldDelegate = try await shouldDelegate(task: task, context: context)
+            
+            if !shouldDelegate {
+                print("💬 OrchestratorPattern: Coordinator decided to respond directly (no delegation)")
+                return try await respondDirectly(task: task, context: context)
+            }
+            
+            print("🔄 OrchestratorPattern: Coordinator decided to delegate to specialized agents")
+        }
+        
         // Step 1: Use coordinator to analyze task and determine which agents are needed
         let analysisStartTime = Date()
-        let analysisTask = AgentTask(
-            description: """
+        
+        // Build analysis task description with file information
+        var analysisTaskDescription = """
             Analyze the following task and break it down into subtasks. For each subtask, specify:
             1. The specific task description
             2. Which agent should handle it (from available agents)
@@ -82,11 +102,23 @@ public struct OrchestratorPattern: OrchestrationPattern {
             Format your response with clear subtask sections (numbered list, bullet points, or "Subtask:" labels).
             
             Available agents: \(agents.map { "\($0.name) (capabilities: \($0.capabilities.map { $0.rawValue }.joined(separator: ", ")))" }.joined(separator: "; "))
+            """
+        
+        if !context.fileReferences.isEmpty {
+            analysisTaskDescription += "\n\nAttached files: \(context.fileReferences.count) file(s)"
+            analysisTaskDescription += "\n- If the task involves analyzing text files, delegate to the File Reader agent"
+            analysisTaskDescription += "\n- If the task involves analyzing images (photos, screenshots, diagrams, etc.), delegate to the Vision Agent"
+        }
+        
+        analysisTaskDescription += """
             
             Task: \(task.description)
             
             Provide a breakdown of subtasks and which agent should handle each subtask.
-            """,
+            """
+        
+        let analysisTask = AgentTask(
+            description: analysisTaskDescription,
             requiredCapabilities: [.generalReasoning]
         )
         
@@ -104,8 +136,35 @@ public struct OrchestratorPattern: OrchestrationPattern {
         print("📊 OrchestratorPattern: Coordinator analysis completed in \(String(format: "%.2f", coordinatorAnalysisTime))s")
         print("📝 OrchestratorPattern: Coordinator analysis output:\n\(analysisResult.content)")
         
+        // Debug logging
+        await DebugLogger.shared.log(
+            location: "OrchestratorPattern.swift:execute",
+            message: "Coordinator analysis output before parsing",
+            hypothesisId: "A",
+            data: [
+                "analysisLength": analysisResult.content.count,
+                "analysisPreview": String(analysisResult.content.prefix(500))
+            ]
+        )
+        
         // Step 2: Parse coordinator's analysis
         let decomposition = await parser.parse(analysisResult.content, availableAgents: agents)
+        
+        // Debug logging
+        await DebugLogger.shared.log(
+            location: "OrchestratorPattern.swift:execute",
+            message: "Parsed subtasks before pruning",
+            hypothesisId: "B",
+            data: [
+                "subtaskCount": decomposition?.subtasks.count ?? 0,
+                "subtasks": decomposition?.subtasks.map { [
+                    "id": $0.id.uuidString,
+                    "description": String($0.description.prefix(100)),
+                    "agentName": $0.agentName ?? "none",
+                    "capabilities": Array($0.requiredCapabilities).map { $0.rawValue }
+                ] } ?? []
+            ]
+        )
         
         // Step 3: Apply dynamic pruning
         let prunedResult = await pruner.prune(decomposition ?? TaskDecomposition(subtasks: []))
@@ -113,6 +172,24 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         let subtasksCreated = decomposition?.subtasks.count ?? 0
         let subtasksPruned = prunedResult.removalRationales.count
+        
+        // Debug logging
+        await DebugLogger.shared.log(
+            location: "OrchestratorPattern.swift:execute",
+            message: "Pruned subtasks",
+            hypothesisId: "C",
+            data: [
+                "subtasksBefore": subtasksCreated,
+                "subtasksAfter": finalDecomposition.subtasks.count,
+                "removedCount": subtasksPruned,
+                "removalRationales": Dictionary(uniqueKeysWithValues: prunedResult.removalRationales.map { ($0.key.uuidString, $0.value) }),
+                "finalSubtasks": finalDecomposition.subtasks.map { [
+                    "id": $0.id.uuidString,
+                    "description": String($0.description.prefix(100)),
+                    "agentName": $0.agentName ?? "none"
+                ] }
+            ]
+        )
         
         print("✂️ OrchestratorPattern: Pruned \(subtasksPruned) subtasks, \(finalDecomposition.subtasks.count) remaining")
         if !prunedResult.removalRationales.isEmpty {
@@ -259,6 +336,18 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         guard let selectedAgent = agent else {
             print("⚠️ OrchestratorPattern: No agent found for subtask, using coordinator")
+            // Debug logging
+            await DebugLogger.shared.log(
+                location: "OrchestratorPattern.swift:executeSubtask",
+                message: "No agent found, using coordinator",
+                hypothesisId: "F",
+                data: [
+                    "subtaskId": subtask.id.uuidString,
+                    "subtaskDescription": String(subtask.description.prefix(100)),
+                    "requiredCapabilities": Array(subtask.requiredCapabilities).map { $0.rawValue },
+                    "agentName": subtask.agentName ?? "none"
+                ]
+            )
             let subtaskTask = AgentTask(description: subtask.description, requiredCapabilities: subtask.requiredCapabilities)
             return try await coordinator.process(task: subtaskTask, context: context)
         }
@@ -471,5 +560,130 @@ public struct OrchestratorPattern: OrchestrationPattern {
     /// Get delegation metrics
     public func getDelegationMetrics() -> DelegationMetrics? {
         return metricsStorage.metrics
+    }
+    
+    /// Determine if the task should be delegated to specialized agents or handled directly
+    /// - Parameters:
+    ///   - task: The task to evaluate
+    ///   - context: The current context
+    /// - Returns: true if task should be delegated, false if coordinator should respond directly
+    private func shouldDelegate(task: AgentTask, context: AgentContext) async throws -> Bool {
+        print("🤔 OrchestratorPattern: Evaluating delegation decision for task '\(task.description.prefix(50))...'")
+        
+        // Build decision prompt with file information
+        var decisionPrompt = """
+            Analyze this task and decide: Should I respond directly or delegate to specialized agents?
+            
+            Task: \(task.description)
+            """
+        
+        if !context.fileReferences.isEmpty {
+            decisionPrompt += "\n\nAttached files: \(context.fileReferences.count) file(s)"
+            decisionPrompt += "\n- Files require specialized file reading capabilities"
+        }
+        
+        decisionPrompt += """
+            
+            Rules:
+            - DIRECT if: greeting, simple question, basic conversation, simple follow-up
+            - DELEGATE if: needs file/web/code/data tools, complex multi-step task, requires specialized capabilities, files are attached
+            
+            Respond with ONLY: "DIRECT" or "DELEGATE"
+            If DIRECT, provide your response. If DELEGATE, explain why.
+            """
+        
+        let decisionTask = AgentTask(
+            description: decisionPrompt,
+            requiredCapabilities: [.generalReasoning]
+        )
+        
+        // Use minimal context for decision (just the task, no full history)
+        // But include file references and conversationId so coordinator knows about files
+        var decisionContext = AgentContext()
+        decisionContext.conversationHistory = context.conversationHistory.suffix(2) // Only last 2 messages for context
+        decisionContext.fileReferences = context.fileReferences // Include file references
+        decisionContext.metadata = context.metadata // Include conversationId and other metadata
+        
+        let decisionResult = try await coordinator.process(task: decisionTask, context: decisionContext)
+        let decisionText = decisionResult.content.uppercased()
+        
+        // Parse decision from response
+        let shouldDelegate = parseDelegationDecision(from: decisionText)
+        
+        print("🤔 OrchestratorPattern: Decision result - \(shouldDelegate ? "DELEGATE" : "DIRECT")")
+        if shouldDelegate {
+            print("   Reason: \(decisionResult.content)")
+        }
+        
+        return shouldDelegate
+    }
+    
+    /// Parse delegation decision from coordinator's response
+    /// - Parameter response: The coordinator's decision response
+    /// - Returns: true if should delegate, false if should respond directly
+    private func parseDelegationDecision(from response: String) -> Bool {
+        // Look for explicit keywords
+        if response.contains("DELEGATE") || response.contains("DELEGATION") {
+            return true
+        }
+        
+        if response.contains("DIRECT") || response.contains("RESPOND DIRECTLY") {
+            return false
+        }
+        
+        // Heuristic: If response looks like delegation instructions or mentions agents/tools, delegate
+        let delegationKeywords = ["agent", "subtask", "delegate", "specialized", "tool", "file", "web", "search", "code", "analyze"]
+        let hasDelegationKeywords = delegationKeywords.contains { keyword in
+            response.lowercased().contains(keyword)
+        }
+        
+        // Heuristic: If response is very short and conversational, likely direct response
+        let isShortConversational = response.count < 200 && (
+            response.lowercased().contains("hi") ||
+            response.lowercased().contains("hello") ||
+            response.lowercased().contains("thanks") ||
+            response.lowercased().contains("thank you")
+        )
+        
+        // Default: If we can't determine, delegate (safer default for complex tasks)
+        if isShortConversational {
+            return false
+        }
+        
+        if hasDelegationKeywords {
+            return true
+        }
+        
+        // Fallback: If response looks like a direct answer (not instructions), treat as direct
+        // Direct answers typically don't mention "agent", "subtask", "delegate", etc.
+        return false
+    }
+    
+    /// Respond directly without delegation (for simple tasks)
+    /// - Parameters:
+    ///   - task: The task to respond to
+    ///   - context: The current context
+    /// - Returns: Direct response from coordinator
+    private func respondDirectly(task: AgentTask, context: AgentContext) async throws -> AgentResult {
+        print("💬 OrchestratorPattern: Coordinator responding directly to task")
+        
+        // Use coordinator to respond directly
+        let directResult = try await coordinator.process(task: task, context: context)
+        
+        // Track tokens for direct response
+        let prompt = try await buildPrompt(from: task, context: context)
+        await tokenTracker.trackPrompt(agentId: coordinator.id, prompt: prompt)
+        await tokenTracker.trackContext(agentId: coordinator.id, context: context)
+        await tokenTracker.trackResponse(agentId: coordinator.id, response: directResult.content)
+        
+        return AgentResult(
+            agentId: coordinator.id,
+            taskId: task.id,
+            content: directResult.content,
+            success: directResult.success,
+            error: directResult.error,
+            toolCalls: directResult.toolCalls,
+            updatedContext: directResult.updatedContext ?? context
+        )
     }
 }

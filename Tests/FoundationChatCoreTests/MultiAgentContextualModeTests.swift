@@ -19,6 +19,9 @@ final class MultiAgentContextualModeTests: XCTestCase {
         agentService = AgentService()
         conversationService = try ConversationService()
         
+        // Ensure all agents are initialized before tests run
+        try await TestHelpers.ensureAgentsInitialized(agentService: agentService)
+        
         let conversation = try conversationService.createConversation(
             title: "Contextual Test"
         )
@@ -27,7 +30,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
     
     override func tearDown() async throws {
         if let conversationId = conversationId {
-            try? conversationService.deleteConversation(id: conversationId)
+            try? await conversationService.deleteConversation(id: conversationId)
         }
         try await super.tearDown()
     }
@@ -37,7 +40,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
     /// Test that multi-agent conversations maintain context across messages
     func testMultiAgentMaintainsContextAcrossMessages() async throws {
         let agents = await agentService.getAvailableAgents()
-        guard let coordinator = agents.first(where: { $0.name == "Coordinator" }) else {
+        guard let coordinator = agents.first(where: { $0.name == AgentName.coordinator }) else {
             XCTFail("Coordinator agent should exist")
             return
         }
@@ -112,7 +115,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
     func testAgentContextSharingInMultiAgent() async throws {
         let agents = await agentService.getAvailableAgents()
         guard let coordinator = agents.first(where: { $0.name == "Coordinator" }),
-              let webSearch = agents.first(where: { $0.name == "Web Search" }) else {
+              let webSearch = agents.first(where: { $0.name == AgentName.webSearch }) else {
             XCTFail("Required agents should exist")
             return
         }
@@ -184,7 +187,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
     func testToolResultsSharedInContext() async throws {
         let agents = await agentService.getAvailableAgents()
         guard let coordinator = agents.first(where: { $0.name == "Coordinator" }),
-              let webSearch = agents.first(where: { $0.name == "Web Search" }) else {
+              let webSearch = agents.first(where: { $0.name == AgentName.webSearch }) else {
             XCTFail("Required agents should exist")
             return
         }
@@ -254,7 +257,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
     /// Test that conversation history is properly passed to agents
     func testConversationHistoryPassedToAgents() async throws {
         let agents = await agentService.getAvailableAgents()
-        guard let coordinator = agents.first(where: { $0.name == "Coordinator" }) else {
+        guard let coordinator = agents.first(where: { $0.name == AgentName.coordinator }) else {
             XCTFail("Coordinator agent should exist")
             return
         }

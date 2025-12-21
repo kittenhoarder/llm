@@ -26,21 +26,6 @@ public actor AgentService {
     private var isInitializing = false
     private var initializationTask: Task<Void, Never>?
     
-    /// Helper function to append log entry to debug.log file
-    private func appendToDebugLog(_ jsonString: String) {
-        let logPath = "/Users/owenperry/dev/llm/.cursor/debug.log"
-        if let fileHandle = FileHandle(forWritingAtPath: logPath) {
-            fileHandle.seekToEndOfFile()
-            if let data = (jsonString + "\n").data(using: .utf8) {
-                fileHandle.write(data)
-            }
-            fileHandle.closeFile()
-        } else {
-            // File doesn't exist, create it
-            try? (jsonString + "\n").write(toFile: logPath, atomically: false, encoding: .utf8)
-        }
-    }
-    
     /// Initialize the agent service
     /// - Parameters:
     ///   - registry: Agent registry (defaults to shared)
@@ -73,12 +58,16 @@ public actor AgentService {
         await registry.register(DataAnalysisAgent())
         print("✅ DataAnalysisAgent registered")
         
+        print("🤖 Registering VisionAgent...")
+        await registry.register(VisionAgent())
+        print("✅ VisionAgent registered")
+        
         // Create a coordinator agent
         // **Status**: ⚠️ Basic Agent - No special tools, just general reasoning
         // Used for orchestrating multi-agent workflows
         print("🤖 Creating coordinator agent...")
         let coordinator = BaseAgent(
-            name: "Coordinator",
+            name: AgentName.coordinator,
             description: "Coordinates tasks and delegates to specialized agents",
             capabilities: [.generalReasoning]
         )
@@ -110,13 +99,14 @@ public actor AgentService {
     ) async throws -> AgentResult {
         print("🤖 AgentService.processMessage() called with message: \(message.prefix(50))...")
         
-        // Get or create context for this conversation
-        var context = conversationContexts[conversationId] ?? AgentContext()
-        print("🤖 Context obtained")
+        // Build context for this conversation
+        let context = buildAgentContext(
+            for: conversationId,
+            conversation: conversation
+        )
         
-        // Update context with conversation history
-        context.conversationHistory = conversation.messages
         print("🤖 Conversation history updated (\(conversation.messages.count) messages)")
+        print("🤖 File references: \(context.fileReferences.count) files")
         
         // Create task
         let task = AgentTask(
@@ -193,104 +183,17 @@ public actor AgentService {
     ) async throws -> AgentResult {
         print("🤖 AgentService.processSingleAgentMessage() called for agent: \(agentId)")
         
-        // #region debug log
-        let allAgents = await registry.listAll()
-        let agentInfo = allAgents.map { ["id": $0.id.uuidString, "name": $0.name] }
-        let logData: [String: Any] = [
-            "sessionId": "debug-session",
-            "runId": "run1",
-            "hypothesisId": "A",
-            "location": "AgentService.swift:processSingleAgentMessage",
-            "message": "Looking up agent by ID",
-            "data": [
-                "requestedAgentId": agentId.uuidString,
-                "availableAgents": agentInfo,
-                "availableAgentIds": allAgents.map { $0.id.uuidString },
-                "agentCount": allAgents.count
-            ],
-            "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
-        ]
-        if let jsonData = try? JSONSerialization.data(withJSONObject: logData),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            appendToDebugLog(jsonString)
-        }
-        // #endregion
-        
-        // Get the agent from registry
-        // Note: Agent IDs may change on app restart, so we need to handle ID mismatches
-        var agent = await registry.getAgent(byId: agentId)
-        
-        // If agent not found by ID, this likely means agent IDs changed on app restart.
-        // In single-agent mode with exactly one selected agent, we can safely use the first
-        // available specialized agent (excluding Coordinator) as a fallback.
-        if agent == nil {
-            print("⚠️ Agent not found by ID: \(agentId) - IDs may have changed on app restart")
-            print("⚠️ Attempting fallback resolution for single-agent mode...")
-            
-            // Get all available agents (excluding Coordinator for single-agent mode)
-            let availableAgents = allAgents.filter { $0.name != "Coordinator" }
-            
-            // For single-agent mode, if there's exactly one specialized agent available,
-            // use it as a fallback. This handles the common case where only one agent is enabled.
-            if availableAgents.count == 1, let fallbackAgent = availableAgents.first {
-                agent = fallbackAgent
-                print("✅ Resolved to single available agent: \(fallbackAgent.name)")
-            } else if !availableAgents.isEmpty {
-                // Multiple agents available - try to match by checking which agent was likely intended
-                // Check if conversation config has hints about which agent to use
-                // For now, prefer WebSearchAgent if available (common use case)
-                agent = availableAgents.first { $0.capabilities.contains(.webSearch) }
-                if agent == nil {
-                    // Fallback to first available agent
-                    agent = availableAgents.first
-                }
-                if let resolvedAgent = agent {
-                    print("⚠️ Using fallback agent resolution: \(resolvedAgent.name)")
-                }
-            }
-        }
-        
-        guard let resolvedAgent = agent else {
-            print("❌ Agent not found: \(agentId) and could not resolve to any available agent")
-            
-            // #region debug log
-            let logData2: [String: Any] = [
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "A",
-                "location": "AgentService.swift:processSingleAgentMessage",
-                "message": "Agent lookup failed and resolution failed",
-                "data": [
-                    "requestedAgentId": agentId.uuidString,
-                    "availableAgentIds": allAgents.map { $0.id.uuidString },
-                    "availableAgentNames": allAgents.map { $0.name },
-                    "matchFound": false
-                ],
-                "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
-            ]
-            if let jsonData = try? JSONSerialization.data(withJSONObject: logData2),
-               let jsonString2 = String(data: jsonData, encoding: .utf8) {
-                appendToDebugLog(jsonString2)
-            }
-            // #endregion
-            
-            throw AgentServiceError.agentNotFound(agentId)
-        }
+        // Resolve agent (with fallback logic for ID mismatches)
+        let resolvedAgent = try await resolveAgent(byId: agentId)
         
         print("✅ Agent found: \(resolvedAgent.name)")
         
-        // Get or create context for this conversation
-        var context = conversationContexts[conversationId] ?? AgentContext()
-        
-        // Update context with conversation history
-        context.conversationHistory = conversation.messages
-        
-        // Add file references from attachments in recent messages and from parameter
-        var allFileReferences = fileReferences
-        for message in conversation.messages.suffix(10) {
-            allFileReferences.append(contentsOf: message.attachments.map { $0.sandboxPath })
-        }
-        context.fileReferences = Array(Set(allFileReferences)) // Remove duplicates
+        // Build context for this conversation
+        let context = buildAgentContext(
+            for: conversationId,
+            conversation: conversation,
+            fileReferences: fileReferences
+        )
         
         print("🤖 Conversation history updated (\(conversation.messages.count) messages)")
         print("🤖 File references: \(context.fileReferences.count) files")
@@ -305,53 +208,14 @@ public actor AgentService {
         // Process the task directly with the agent (no orchestration)
         print("🤖 Processing task directly with agent: \(resolvedAgent.name)...")
         
-        // #region debug log
-        let logDataProcess: [String: Any] = [
-            "sessionId": "debug-session",
-            "runId": "run1",
-            "hypothesisId": "E",
-            "location": "AgentService.swift:processSingleAgentMessage",
-            "message": "About to call agent.process()",
-            "data": [
-                "agentId": resolvedAgent.id.uuidString,
-                "agentName": resolvedAgent.name,
-                "taskDescription": task.description,
-                "taskParameters": task.parameters,
-                "contextHistoryCount": context.conversationHistory.count
-            ],
-            "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
-        ]
-        if let jsonData = try? JSONSerialization.data(withJSONObject: logDataProcess),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            appendToDebugLog(jsonString)
-        }
-        // #endregion
+        // Debug logging
+        await logAgentProcessing(agent: resolvedAgent, task: task, context: context)
         
         let result = try await resolvedAgent.process(task: task, context: context)
         print("✅ Agent processing completed")
         
-        // #region debug log
-        let logDataResult: [String: Any] = [
-            "sessionId": "debug-session",
-            "runId": "run1",
-            "hypothesisId": "E",
-            "location": "AgentService.swift:processSingleAgentMessage",
-            "message": "Agent.process() completed",
-            "data": [
-                "agentId": resolvedAgent.id.uuidString,
-                "agentName": resolvedAgent.name,
-                "resultSuccess": result.success,
-                "resultContentLength": result.content.count,
-                "resultToolCallsCount": result.toolCalls.count,
-                "resultToolCalls": result.toolCalls.map { ["toolName": $0.toolName, "arguments": $0.arguments] }
-            ],
-            "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
-        ]
-        if let jsonData = try? JSONSerialization.data(withJSONObject: logDataResult),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            appendToDebugLog(jsonString)
-        }
-        // #endregion
+        // Debug logging for result
+        await logAgentResult(agent: resolvedAgent, result: result)
         
         // Update conversation context
         if let updated = result.updatedContext {
@@ -372,12 +236,34 @@ public actor AgentService {
         return agents
     }
     
+    /// Check if all default agents are registered
+    private func hasAllDefaultAgents() async -> Bool {
+        let expectedAgentNames: Set<String> = [
+            AgentName.fileReader,
+            AgentName.webSearch,
+            AgentName.codeAnalysis,
+            AgentName.dataAnalysis,
+            AgentName.visionAgent,
+            AgentName.coordinator
+        ]
+        
+        let existing = await registry.listAll()
+        let existingNames = Set(existing.map { $0.name })
+        
+        let hasAll = expectedAgentNames.isSubset(of: existingNames)
+        if !hasAll {
+            let missing = expectedAgentNames.subtracting(existingNames)
+            print("⚠️ Missing agents: \(missing.joined(separator: ", "))")
+        }
+        return hasAll
+    }
+    
     /// Ensure agents are initialized (idempotent)
     private func ensureAgentsInitialized() async {
-        // Check if already initialized
-        let existing = await registry.listAll()
-        if !existing.isEmpty {
-            print("🔧 Agents already initialized (\(existing.count) found)")
+        // Check if all expected agents are already initialized
+        if await hasAllDefaultAgents() {
+            let existing = await registry.listAll()
+            print("🔧 All default agents already initialized (\(existing.count) found)")
             return
         }
         
@@ -388,12 +274,17 @@ public actor AgentService {
             if let task = initializationTask {
                 await task.value
             }
-            return
+            // After waiting, check again if all agents are present
+            if await hasAllDefaultAgents() {
+                return
+            }
+            // If still missing, continue to initialize
         }
         
         // Start initialization
         isInitializing = true
-        print("🔧 No agents found, initializing...")
+        let existing = await registry.listAll()
+        print("🔧 Initializing default agents (currently \(existing.count) agents found)...")
         
         let task = Task {
             await initializeDefaultAgents()
@@ -402,6 +293,14 @@ public actor AgentService {
         
         initializationTask = task
         await task.value
+        
+        // Verify all agents were registered
+        if await hasAllDefaultAgents() {
+            let final = await registry.listAll()
+            print("✅ All default agents initialized (\(final.count) agents)")
+        } else {
+            print("⚠️ Warning: Some agents may not have been initialized")
+        }
     }
     
     /// Get agents by capability
@@ -476,6 +375,175 @@ public actor AgentService {
         }
         
         return capabilities
+    }
+    
+    // MARK: - Helper Methods
+    
+    /// Collect file references from conversation messages
+    /// - Parameters:
+    ///   - conversation: The conversation
+    ///   - additionalFiles: Additional file paths to include
+    /// - Returns: Array of unique file paths
+    private func collectFileReferences(
+        from conversation: Conversation,
+        additionalFiles: [String] = []
+    ) -> [String] {
+        var allFileReferences = additionalFiles
+        for message in conversation.messages.suffix(AppConstants.recentMessagesCount) {
+            allFileReferences.append(contentsOf: message.attachments.map { $0.sandboxPath })
+        }
+        return Array(Set(allFileReferences)) // Remove duplicates
+    }
+    
+    /// Build agent context for a conversation
+    /// - Parameters:
+    ///   - conversationId: Conversation ID
+    ///   - conversation: The conversation
+    ///   - fileReferences: Additional file references
+    /// - Returns: Built agent context
+    private func buildAgentContext(
+        for conversationId: UUID,
+        conversation: Conversation,
+        fileReferences: [String] = []
+    ) -> AgentContext {
+        var context = conversationContexts[conversationId] ?? AgentContext()
+        context.conversationHistory = conversation.messages
+        context.fileReferences = collectFileReferences(from: conversation, additionalFiles: fileReferences)
+        context.metadata["conversationId"] = conversationId.uuidString
+        return context
+    }
+    
+    /// Resolve agent by ID with fallback logic
+    /// - Parameter agentId: Agent ID to resolve
+    /// - Returns: Resolved agent
+    /// - Throws: AgentServiceError if agent cannot be resolved
+    private func resolveAgent(byId agentId: UUID) async throws -> any Agent {
+        let allAgents = await registry.listAll()
+        
+        // Debug logging for agent lookup
+        await logAgentLookup(agentId: agentId, availableAgents: allAgents)
+        
+        // Get the agent from registry
+        // Note: Agent IDs may change on app restart, so we need to handle ID mismatches
+        var agent = await registry.getAgent(byId: agentId)
+        
+        // If agent not found by ID, this likely means agent IDs changed on app restart.
+        // In single-agent mode with exactly one selected agent, we can safely use the first
+        // available specialized agent (excluding Coordinator) as a fallback.
+        if agent == nil {
+            print("⚠️ Agent not found by ID: \(agentId) - IDs may have changed on app restart")
+            print("⚠️ Attempting fallback resolution for single-agent mode...")
+            
+            // Get all available agents (excluding Coordinator for single-agent mode)
+            let availableAgents = allAgents.filter { $0.name != AgentName.coordinator }
+            
+            // For single-agent mode, if there's exactly one specialized agent available,
+            // use it as a fallback. This handles the common case where only one agent is enabled.
+            if availableAgents.count == 1, let fallbackAgent = availableAgents.first {
+                agent = fallbackAgent
+                print("✅ Resolved to single available agent: \(fallbackAgent.name)")
+            } else if !availableAgents.isEmpty {
+                // Multiple agents available - try to match by checking which agent was likely intended
+                // Check if conversation config has hints about which agent to use
+                // For now, prefer WebSearchAgent if available (common use case)
+                agent = availableAgents.first { $0.capabilities.contains(.webSearch) }
+                if agent == nil {
+                    // Fallback to first available agent
+                    agent = availableAgents.first
+                }
+                if let resolvedAgent = agent {
+                    print("⚠️ Using fallback agent resolution: \(resolvedAgent.name)")
+                }
+            }
+        }
+        
+        guard let resolvedAgent = agent else {
+            print("❌ Agent not found: \(agentId) and could not resolve to any available agent")
+            
+            // Debug logging for failed lookup
+            await logAgentLookupFailed(agentId: agentId, availableAgents: allAgents)
+            
+            throw AgentServiceError.agentNotFound(agentId)
+        }
+        
+        return resolvedAgent
+    }
+    
+    /// Log agent lookup for debugging
+    /// - Parameters:
+    ///   - agentId: Requested agent ID
+    ///   - availableAgents: Available agents
+    private func logAgentLookup(agentId: UUID, availableAgents: [any Agent]) async {
+        let agentInfo = availableAgents.map { ["id": $0.id.uuidString, "name": $0.name] }
+        await DebugLogger.shared.log(
+            location: "AgentService.swift:processSingleAgentMessage",
+            message: "Looking up agent by ID",
+            hypothesisId: "A",
+            data: [
+                "requestedAgentId": agentId.uuidString,
+                "availableAgents": agentInfo,
+                "availableAgentIds": availableAgents.map { $0.id.uuidString },
+                "agentCount": availableAgents.count
+            ]
+        )
+    }
+    
+    /// Log failed agent lookup for debugging
+    /// - Parameters:
+    ///   - agentId: Requested agent ID
+    ///   - availableAgents: Available agents
+    private func logAgentLookupFailed(agentId: UUID, availableAgents: [any Agent]) async {
+        await DebugLogger.shared.log(
+            location: "AgentService.swift:processSingleAgentMessage",
+            message: "Agent lookup failed and resolution failed",
+            hypothesisId: "A",
+            data: [
+                "requestedAgentId": agentId.uuidString,
+                "availableAgentIds": availableAgents.map { $0.id.uuidString },
+                "availableAgentNames": availableAgents.map { $0.name },
+                "matchFound": false
+            ]
+        )
+    }
+    
+    /// Log agent processing for debugging
+    /// - Parameters:
+    ///   - agent: The agent being processed
+    ///   - task: The task being processed
+    ///   - context: The context being used
+    private func logAgentProcessing(agent: any Agent, task: AgentTask, context: AgentContext) async {
+        await DebugLogger.shared.log(
+            location: "AgentService.swift:processSingleAgentMessage",
+            message: "About to call agent.process()",
+            hypothesisId: "E",
+            data: [
+                "agentId": agent.id.uuidString,
+                "agentName": agent.name,
+                "taskDescription": task.description,
+                "taskParameters": task.parameters,
+                "contextHistoryCount": context.conversationHistory.count
+            ]
+        )
+    }
+    
+    /// Log agent result for debugging
+    /// - Parameters:
+    ///   - agent: The agent that processed
+    ///   - result: The result
+    private func logAgentResult(agent: any Agent, result: AgentResult) async {
+        await DebugLogger.shared.log(
+            location: "AgentService.swift:processSingleAgentMessage",
+            message: "Agent.process() completed",
+            hypothesisId: "E",
+            data: [
+                "agentId": agent.id.uuidString,
+                "agentName": agent.name,
+                "resultSuccess": result.success,
+                "resultContentLength": result.content.count,
+                "resultToolCallsCount": result.toolCalls.count,
+                "resultToolCalls": result.toolCalls.map { ["toolName": $0.toolName, "arguments": $0.arguments] }
+            ]
+        )
     }
 }
 

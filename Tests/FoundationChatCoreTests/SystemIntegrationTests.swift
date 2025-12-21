@@ -19,6 +19,9 @@ final class SystemIntegrationTests: XCTestCase {
         agentService = AgentService()
         conversationService = try ConversationService()
         
+        // Ensure all agents are initialized before tests run
+        try await TestHelpers.ensureAgentsInitialized(agentService: agentService)
+        
         // Create a test conversation
         let conversation = try conversationService.createConversation(
             title: "Test Conversation"
@@ -28,7 +31,7 @@ final class SystemIntegrationTests: XCTestCase {
     
     override func tearDown() async throws {
         if let conversationId = conversationId {
-            try? conversationService.deleteConversation(id: conversationId)
+            try? await conversationService.deleteConversation(id: conversationId)
         }
         try await super.tearDown()
     }
@@ -41,29 +44,30 @@ final class SystemIntegrationTests: XCTestCase {
         XCTAssertFalse(agents.isEmpty, "Default agents should be registered")
         
         let agentNames = agents.map { $0.name }
-        XCTAssertTrue(agentNames.contains("File Reader"), "FileReaderAgent should be registered")
-        XCTAssertTrue(agentNames.contains("Web Search"), "WebSearchAgent should be registered")
-        XCTAssertTrue(agentNames.contains("Code Analysis"), "CodeAnalysisAgent should be registered")
-        XCTAssertTrue(agentNames.contains("Data Analysis"), "DataAnalysisAgent should be registered")
-        XCTAssertTrue(agentNames.contains("Coordinator"), "Coordinator agent should be registered")
+        XCTAssertTrue(agentNames.contains(AgentName.fileReader), "FileReaderAgent should be registered")
+        XCTAssertTrue(agentNames.contains(AgentName.webSearch), "WebSearchAgent should be registered")
+        XCTAssertTrue(agentNames.contains(AgentName.codeAnalysis), "CodeAnalysisAgent should be registered")
+        XCTAssertTrue(agentNames.contains(AgentName.dataAnalysis), "DataAnalysisAgent should be registered")
+        XCTAssertTrue(agentNames.contains(AgentName.visionAgent), "VisionAgent should be registered")
+        XCTAssertTrue(agentNames.contains(AgentName.coordinator), "Coordinator agent should be registered")
     }
     
     func testAgentsHaveCorrectCapabilities() async throws {
         let agents = await agentService.getAvailableAgents()
         
-        let fileReader = agents.first { $0.name == "File Reader" }
+        let fileReader = agents.first { $0.name == AgentName.fileReader }
         XCTAssertNotNil(fileReader, "File Reader agent should exist")
         XCTAssertTrue(fileReader?.capabilities.contains(.fileReading) ?? false, "File Reader should have fileReading capability")
         
-        let webSearch = agents.first { $0.name == "Web Search" }
+        let webSearch = agents.first { $0.name == AgentName.webSearch }
         XCTAssertNotNil(webSearch, "Web Search agent should exist")
         XCTAssertTrue(webSearch?.capabilities.contains(.webSearch) ?? false, "Web Search should have webSearch capability")
         
-        let codeAnalysis = agents.first { $0.name == "Code Analysis" }
+        let codeAnalysis = agents.first { $0.name == AgentName.codeAnalysis }
         XCTAssertNotNil(codeAnalysis, "Code Analysis agent should exist")
         XCTAssertTrue(codeAnalysis?.capabilities.contains(.codeAnalysis) ?? false, "Code Analysis should have codeAnalysis capability")
         
-        let dataAnalysis = agents.first { $0.name == "Data Analysis" }
+        let dataAnalysis = agents.first { $0.name == AgentName.dataAnalysis }
         XCTAssertNotNil(dataAnalysis, "Data Analysis agent should exist")
         XCTAssertTrue(dataAnalysis?.capabilities.contains(.dataAnalysis) ?? false, "Data Analysis should have dataAnalysis capability")
     }
@@ -72,7 +76,7 @@ final class SystemIntegrationTests: XCTestCase {
     
     func testSingleAgentProcessesMessage() async throws {
         let agents = await agentService.getAvailableAgents()
-        guard let coordinator = agents.first(where: { $0.name == "Coordinator" }) else {
+        guard let coordinator = agents.first(where: { $0.name == AgentName.coordinator }) else {
             XCTFail("Coordinator agent should exist")
             return
         }
@@ -112,12 +116,13 @@ final class SystemIntegrationTests: XCTestCase {
         XCTAssertFalse(result.content.isEmpty, "Agent should return content")
     }
     
-    // MARK: - Multi-Agent Orchestration Tests
+    // MARK: - Orchestrator Mode Tests (Experimental)
     
-    func testMultiAgentOrchestrationSharesContext() async throws {
+    /// Test orchestrator mode (experimental) - coordinator delegates to specialized agents
+    func testOrchestratorModeSharesContext() async throws {
         let agents = await agentService.getAvailableAgents()
         guard let coordinator = agents.first(where: { $0.name == "Coordinator" }),
-              let webSearch = agents.first(where: { $0.name == "Web Search" }) else {
+              let webSearch = agents.first(where: { $0.name == AgentName.webSearch }) else {
             XCTFail("Required agents should exist")
             return
         }
@@ -185,11 +190,12 @@ final class SystemIntegrationTests: XCTestCase {
         )
     }
     
-    func testMultiAgentCollaborativePattern() async throws {
+    /// Test collaborative pattern in orchestrator mode (experimental)
+    func testOrchestratorModeCollaborativePattern() async throws {
         let agents = await agentService.getAvailableAgents()
         guard let coordinator = agents.first(where: { $0.name == "Coordinator" }),
               let webSearch = agents.first(where: { $0.name == "Web Search" }),
-              let codeAnalysis = agents.first(where: { $0.name == "Code Analysis" }) else {
+              let codeAnalysis = agents.first(where: { $0.name == AgentName.codeAnalysis }) else {
             XCTFail("Required agents should exist")
             return
         }
@@ -283,7 +289,7 @@ final class SystemIntegrationTests: XCTestCase {
     
     func testConversationHistoryIsPreserved() async throws {
         let agents = await agentService.getAvailableAgents()
-        guard let coordinator = agents.first(where: { $0.name == "Coordinator" }) else {
+        guard let coordinator = agents.first(where: { $0.name == AgentName.coordinator }) else {
             XCTFail("Coordinator agent should exist")
             return
         }
@@ -341,7 +347,6 @@ final class SystemIntegrationTests: XCTestCase {
         let lastMessage = finalConversation.messages.last
         XCTAssertNotNil(lastMessage, "Should have a last message")
         // The agent should be able to reference the name from context
-        let content = lastMessage?.content.lowercased() ?? ""
         // Note: This is a soft check - the model may or may not explicitly mention the name
         // but the context should be available
     }
@@ -382,10 +387,11 @@ final class SystemIntegrationTests: XCTestCase {
     
     // MARK: - Performance Tests
     
-    func testMultiAgentPerformance() async throws {
+    /// Test orchestrator mode performance (experimental)
+    func testOrchestratorModePerformance() async throws {
         let agents = await agentService.getAvailableAgents()
         guard let coordinator = agents.first(where: { $0.name == "Coordinator" }),
-              let webSearch = agents.first(where: { $0.name == "Web Search" }) else {
+              let webSearch = agents.first(where: { $0.name == AgentName.webSearch }) else {
             XCTFail("Required agents should exist")
             return
         }
