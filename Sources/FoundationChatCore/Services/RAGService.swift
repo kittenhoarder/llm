@@ -105,14 +105,40 @@ public actor RAGService {
         
         // Get or create collection for this conversation
         let collectionName = "conversation_\(conversationId.uuidString)"
+        
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "RAGService.swift:indexFile",
+            message: "indexFile: Getting or creating collection",
+            hypothesisId: "D",
+            data: ["collectionName": collectionName, "conversationId": conversationId.uuidString, "fileName": attachment.originalName]
+        )
+        // #endregion
+        
         let collection: Collection
         do {
             // Try to get existing collection first
             if let existingCollection = svdb.getCollection(collectionName) {
                 collection = existingCollection
+                // #region debug log
+                await DebugLogger.shared.log(
+                    location: "RAGService.swift:indexFile",
+                    message: "Found existing collection",
+                    hypothesisId: "D",
+                    data: ["collectionName": collectionName]
+                )
+                // #endregion
             } else {
                 // Create new collection if it doesn't exist
                 collection = try svdb.collection(collectionName)
+                // #region debug log
+                await DebugLogger.shared.log(
+                    location: "RAGService.swift:indexFile",
+                    message: "Created new collection",
+                    hypothesisId: "D",
+                    data: ["collectionName": collectionName]
+                )
+                // #endregion
             }
         } catch {
             // If collection already exists, get it
@@ -158,6 +184,16 @@ public actor RAGService {
         conversationId: UUID,
         topK: Int? = nil
     ) async throws -> [DocumentChunk] {
+        // #region debug log
+        let collectionName = "conversation_\(conversationId.uuidString)"
+        await DebugLogger.shared.log(
+            location: "RAGService.swift:searchRelevantChunks",
+            message: "searchRelevantChunks called",
+            hypothesisId: "B,E",
+            data: ["query": String(query.prefix(50)), "conversationId": conversationId.uuidString, "collectionName": collectionName]
+        )
+        // #endregion
+        
         let k = topK ?? self.topK
         
         // Generate embedding for query
@@ -165,17 +201,42 @@ public actor RAGService {
         let doubleQueryEmbedding = queryEmbedding.map { Double($0) }
         
         // Get collection for this conversation
-        let collectionName = "conversation_\(conversationId.uuidString)"
         guard let collection = svdb.getCollection(collectionName) else {
+            // #region debug log
+            await DebugLogger.shared.log(
+                location: "RAGService.swift:searchRelevantChunks",
+                message: "Collection not found, returning empty",
+                hypothesisId: "D,E",
+                data: ["collectionName": collectionName]
+            )
+            // #endregion
             // Collection doesn't exist, return empty results
             return []
         }
+        
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "RAGService.swift:searchRelevantChunks",
+            message: "Collection found, performing search",
+            hypothesisId: "D",
+            data: ["collectionName": collectionName, "topK": k]
+        )
+        // #endregion
         
         // Search SVDB - returns [SearchResult] with id, text, and score
         let searchResults = collection.search(
             query: doubleQueryEmbedding,
             num_results: k
         )
+        
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "RAGService.swift:searchRelevantChunks",
+            message: "Search completed",
+            hypothesisId: "E",
+            data: ["resultsCount": searchResults.count]
+        )
+        // #endregion
         
         // Convert SearchResult objects to DocumentChunk objects
         var chunks: [DocumentChunk] = []
@@ -305,6 +366,15 @@ public actor RAGService {
     /// - Throws: RAGError if deletion fails
     public func deleteConversationIndexes(conversationId: UUID) async throws {
         let collectionName = "conversation_\(conversationId.uuidString)"
+        
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "RAGService.swift:deleteConversationIndexes",
+            message: "deleteConversationIndexes called",
+            hypothesisId: "C",
+            data: ["conversationId": conversationId.uuidString, "collectionName": collectionName]
+        )
+        // #endregion
         
         // Get collection if it exists
         if let collection = svdb.getCollection(collectionName) {

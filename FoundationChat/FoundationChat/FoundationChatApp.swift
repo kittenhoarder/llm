@@ -49,7 +49,6 @@ struct AppContentView: View {
             }
         } else {
             ContentView()
-                .preferredColorScheme(.dark)
                 .onAppear {
                     print("✅ AppContentView appeared")
                 }

@@ -59,7 +59,8 @@ public struct OrchestratorPattern: OrchestrationPattern {
     public func execute(
         task: AgentTask,
         agents: [any Agent],
-        context: AgentContext
+        context: AgentContext,
+        progressTracker: OrchestrationProgressTracker? = nil
     ) async throws -> AgentResult {
         let _ = Date()
         var coordinatorAnalysisTime: TimeInterval = 0
@@ -77,10 +78,26 @@ public struct OrchestratorPattern: OrchestrationPattern {
         }
         if smartDelegationEnabled {
             // Step 0: Decision step - should we delegate or respond directly?
-            let shouldDelegate = try await shouldDelegate(task: task, context: context)
+            let (shouldDelegate, decisionReason) = try await shouldDelegateWithReason(task: task, context: context)
+            
+            // Emit delegation decision event
+            if let tracker = progressTracker {
+                await tracker.emit(.delegationDecision(shouldDelegate: shouldDelegate, reason: decisionReason))
+            }
             
             if !shouldDelegate {
                 print("💬 OrchestratorPattern: Coordinator decided to respond directly (no delegation)")
+                if let tracker = progressTracker {
+                    await tracker.emit(.orchestrationCompleted(metrics: DelegationMetrics(
+                        subtasksCreated: 0,
+                        subtasksPruned: 0,
+                        agentsUsed: 1,
+                        totalTokens: 0,
+                        tokenSavingsPercentage: 0,
+                        executionTimeBreakdown: ExecutionTimeBreakdown()
+                    )))
+                    await tracker.finish()
+                }
                 return try await respondDirectly(task: task, context: context)
             }
             
@@ -127,8 +144,18 @@ public struct OrchestratorPattern: OrchestrationPattern {
         await tokenTracker.trackPrompt(agentId: coordinator.id, prompt: analysisPrompt)
         await tokenTracker.trackContext(agentId: coordinator.id, context: context)
         
+        // Emit analysis started event
+        if let tracker = progressTracker {
+            await tracker.emit(.coordinatorAnalysisStarted)
+        }
+        
         let analysisResult = try await coordinator.process(task: analysisTask, context: context)
         coordinatorAnalysisTime = Date().timeIntervalSince(analysisStartTime)
+        
+        // Emit analysis completed event
+        if let tracker = progressTracker {
+            await tracker.emit(.coordinatorAnalysisCompleted(analysis: analysisResult.content))
+        }
         
         await tokenTracker.trackResponse(agentId: coordinator.id, response: analysisResult.content)
         await tokenTracker.trackToolCalls(agentId: coordinator.id, toolCalls: analysisResult.toolCalls)
@@ -149,6 +176,11 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         // Step 2: Parse coordinator's analysis
         let decomposition = await parser.parse(analysisResult.content, availableAgents: agents)
+        
+        // Emit task decomposition event if parsing succeeded
+        if let decomposition = decomposition, let tracker = progressTracker {
+            await tracker.emit(.taskDecomposition(decomposition: decomposition))
+        }
         
         // Debug logging
         await DebugLogger.shared.log(
@@ -195,6 +227,10 @@ public struct OrchestratorPattern: OrchestrationPattern {
         if !prunedResult.removalRationales.isEmpty {
             for (id, rationale) in prunedResult.removalRationales {
                 print("  - Removed subtask \(id.uuidString.prefix(8)): \(rationale)")
+                // Emit subtask pruned event
+                if let tracker = progressTracker {
+                    await tracker.emit(.subtaskPruned(subtaskId: id, rationale: rationale))
+                }
             }
         }
         
@@ -226,7 +262,8 @@ public struct OrchestratorPattern: OrchestrationPattern {
                         subtask: subtask,
                         agents: agents,
                         context: updatedContext,
-                        previousResults: previousResults
+                        previousResults: previousResults,
+                        progressTracker: progressTracker
                     )
                     results.append(result)
                     previousResults.append(result)
@@ -247,7 +284,8 @@ public struct OrchestratorPattern: OrchestrationPattern {
                                 subtask: subtask,
                                 agents: agents,
                                 context: contextSnapshot,
-                                previousResults: previousResultsSnapshot
+                                previousResults: previousResultsSnapshot,
+                                progressTracker: progressTracker
                             )
                         }
                     }
@@ -275,8 +313,19 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         // Step 5: Synthesize results using coordinator
         let synthesisStartTime = Date()
+        
+        // Emit synthesis started event
+        if let tracker = progressTracker {
+            await tracker.emit(.synthesisStarted)
+        }
+        
         let synthesizedContent = try await synthesizeResults(results, context: updatedContext)
         coordinatorSynthesisTime = Date().timeIntervalSince(synthesisStartTime)
+        
+        // Emit synthesis completed event
+        if let tracker = progressTracker {
+            await tracker.emit(.synthesisCompleted)
+        }
         
         await tokenTracker.trackPrompt(agentId: coordinator.id, prompt: "Synthesize results")
         await tokenTracker.trackResponse(agentId: coordinator.id, response: synthesizedContent)
@@ -311,6 +360,12 @@ public struct OrchestratorPattern: OrchestrationPattern {
             finalContext.toolResults["agent_result_\(index)_full"] = result.content
         }
         
+        // Emit orchestration completed event
+        if let tracker = progressTracker, let metrics = metricsStorage.metrics {
+            await tracker.emit(.orchestrationCompleted(metrics: metrics))
+            await tracker.finish()
+        }
+        
         return AgentResult(
             agentId: coordinator.id,
             taskId: task.id,
@@ -327,7 +382,8 @@ public struct OrchestratorPattern: OrchestrationPattern {
         subtask: DecomposedSubtask,
         agents: [any Agent],
         context: AgentContext,
-        previousResults: [AgentResult]
+        previousResults: [AgentResult],
+        progressTracker: OrchestrationProgressTracker? = nil
     ) async throws -> AgentResult {
         print("🎯 OrchestratorPattern: Executing subtask '\(subtask.description.prefix(50))...'")
         
@@ -349,10 +405,24 @@ public struct OrchestratorPattern: OrchestrationPattern {
                 ]
             )
             let subtaskTask = AgentTask(description: subtask.description, requiredCapabilities: subtask.requiredCapabilities)
-            return try await coordinator.process(task: subtaskTask, context: context)
+            // Emit subtask started with coordinator
+            if let tracker = progressTracker {
+                await tracker.emit(.subtaskStarted(subtask: subtask, agentId: coordinator.id, agentName: coordinator.name))
+            }
+            let result = try await coordinator.process(task: subtaskTask, context: context)
+            // Emit subtask completed
+            if let tracker = progressTracker {
+                await tracker.emit(.subtaskCompleted(subtask: subtask, result: result))
+            }
+            return result
         }
         
         print("🤖 OrchestratorPattern: Selected agent '\(selectedAgent.name)' for subtask")
+        
+        // Emit subtask started event
+        if let tracker = progressTracker {
+            await tracker.emit(.subtaskStarted(subtask: subtask, agentId: selectedAgent.id, agentName: selectedAgent.name))
+        }
         
         // Build isolated context
         let isolatedContext = try await contextBuilder.buildContext(
@@ -384,6 +454,15 @@ public struct OrchestratorPattern: OrchestrationPattern {
         await tokenTracker.trackToolCalls(agentId: selectedAgent.id, toolCalls: result.toolCalls)
         
         print("✅ OrchestratorPattern: Subtask completed by '\(selectedAgent.name)'")
+        
+        // Emit subtask completed event
+        if let tracker = progressTracker {
+            if result.success {
+                await tracker.emit(.subtaskCompleted(subtask: subtask, result: result))
+            } else {
+                await tracker.emit(.subtaskFailed(subtask: subtask, error: result.error ?? "Unknown error"))
+            }
+        }
         
         return result
     }
@@ -524,10 +603,44 @@ public struct OrchestratorPattern: OrchestrationPattern {
     
     /// Estimate tokens for single-agent approach (for comparison)
     private func estimateSingleAgentTokens(task: AgentTask, context: AgentContext) async -> Int {
-        let taskTokens = await TokenCounter().countTokens(task.description)
-        let contextTokens = await TokenCounter().countTokens(context.conversationHistory)
-        // Rough estimate: assume single agent would see full context + task
-        return taskTokens + contextTokens + 500 // Add buffer for response
+        let tokenCounter = TokenCounter()
+        
+        // Calculate base input tokens
+        let taskTokens = await tokenCounter.countTokens(task.description)
+        let contextTokens = await tokenCounter.countTokens(context.conversationHistory)
+        let fileRefTokens = context.fileReferences.joined(separator: ", ").count / 4 // Rough estimate
+        let baseInputTokens = taskTokens + contextTokens + fileRefTokens
+        
+        // Estimate response tokens: typical LLM responses are 1.5-3x input tokens
+        // For complex tasks requiring research/analysis, use higher multiplier
+        let requiresTools = !task.requiredCapabilities.isEmpty
+        let responseMultiplier = requiresTools ? 3.0 : 2.0 // More tokens if tools are needed
+        let estimatedResponseTokens = Int(Double(baseInputTokens) * responseMultiplier)
+        
+        // Add tool call overhead if task requires tools
+        var toolCallTokens = 0
+        if requiresTools {
+            // Estimate tool calls: each tool call adds ~100-200 tokens (name + args + result)
+            // For web search tasks, estimate 1-2 tool calls
+            // For file reading, estimate 1 tool call per file
+            if task.requiredCapabilities.contains(.webSearch) {
+                toolCallTokens = 300 // Search query + results
+            } else if task.requiredCapabilities.contains(.fileReading) {
+                toolCallTokens = 200 * max(1, context.fileReferences.count)
+            } else {
+                toolCallTokens = 200 // Generic tool call overhead
+            }
+        }
+        
+        // Add overhead for multiple interaction rounds if task is complex
+        // Complex tasks might need follow-up prompts
+        let complexityOverhead = task.description.count > 200 ? 500 : 0
+        
+        let totalEstimate = baseInputTokens + estimatedResponseTokens + toolCallTokens + complexityOverhead
+        
+        print("📊 OrchestratorPattern: Single-agent estimate - Input: \(baseInputTokens), Response: \(estimatedResponseTokens), Tools: \(toolCallTokens), Overhead: \(complexityOverhead), Total: \(totalEstimate)")
+        
+        return totalEstimate
     }
     
     /// Aggregate multiple agent results into a single response (fallback method)
@@ -562,12 +675,28 @@ public struct OrchestratorPattern: OrchestrationPattern {
         return metricsStorage.metrics
     }
     
+    /// Determine if the task should be delegated to specialized agents or handled directly (with reason)
+    /// - Parameters:
+    ///   - task: The task to evaluate
+    ///   - context: The current context
+    /// - Returns: Tuple of (shouldDelegate, reason)
+    private func shouldDelegateWithReason(task: AgentTask, context: AgentContext) async throws -> (Bool, String?) {
+        let result = try await shouldDelegateInternal(task: task, context: context)
+        return (result.shouldDelegate, result.reason)
+    }
+    
     /// Determine if the task should be delegated to specialized agents or handled directly
     /// - Parameters:
     ///   - task: The task to evaluate
     ///   - context: The current context
     /// - Returns: true if task should be delegated, false if coordinator should respond directly
     private func shouldDelegate(task: AgentTask, context: AgentContext) async throws -> Bool {
+        let result = try await shouldDelegateInternal(task: task, context: context)
+        return result.shouldDelegate
+    }
+    
+    /// Internal method that returns both decision and reason
+    private func shouldDelegateInternal(task: AgentTask, context: AgentContext) async throws -> (shouldDelegate: Bool, reason: String?) {
         print("🤔 OrchestratorPattern: Evaluating delegation decision for task '\(task.description.prefix(50))...'")
         
         // Build decision prompt with file information
@@ -615,7 +744,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
             print("   Reason: \(decisionResult.content)")
         }
         
-        return shouldDelegate
+        return (shouldDelegate, shouldDelegate ? decisionResult.content : nil)
     }
     
     /// Parse delegation decision from coordinator's response

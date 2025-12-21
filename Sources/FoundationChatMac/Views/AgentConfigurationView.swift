@@ -15,12 +15,23 @@ struct AgentConfigurationView: View {
     @State private var availableAgents: [AgentInfo] = []
     let conversationType: ConversationType
     let onConfigure: (AgentConfiguration) -> Void
+    @AppStorage("preferredColorScheme") private var preferredColorScheme: String = "dark"
+    @Environment(\.colorScheme) private var systemColorScheme
     
     struct AgentInfo: Identifiable {
         let id: UUID
         let name: String
         let description: String
         let capabilities: Set<AgentCapability>
+    }
+    
+    private var effectiveColorScheme: ColorScheme {
+        switch preferredColorScheme {
+        case "light": return .light
+        case "dark": return .dark
+        case "system": return systemColorScheme
+        default: return .dark
+        }
     }
     
     var body: some View {
@@ -48,7 +59,7 @@ struct AgentConfigurationView: View {
                 .disabled(selectedAgents.isEmpty && conversationType != .chat)
             }
             .padding()
-            .background(Theme.surfaceElevated)
+            .background(Theme.surfaceElevated(for: effectiveColorScheme))
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -74,16 +85,16 @@ struct AgentConfigurationView: View {
                                     .font(.headline)
                                 Text(agent.description)
                                     .font(.caption)
-                                    .foregroundColor(Theme.textSecondary)
+                                    .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                 Text("Capabilities: \(agent.capabilities.map { $0.rawValue }.joined(separator: ", "))")
                                     .font(.caption2)
-                                    .foregroundColor(Theme.textSecondary)
+                                    .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                             }
                             
                             Spacer()
                         }
                         .padding()
-                        .background(Theme.surfaceElevated)
+                        .background(Theme.surfaceElevated(for: effectiveColorScheme))
                         .cornerRadius(8)
                         .padding(.horizontal)
                     }
@@ -92,7 +103,7 @@ struct AgentConfigurationView: View {
             }
         }
         .frame(width: 500, height: 600)
-        .background(Theme.surface)
+        .background(Theme.surface(for: effectiveColorScheme))
         .task {
             await loadAgents()
         }

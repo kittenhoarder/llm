@@ -9,7 +9,7 @@ import Foundation
 
 /// Represents a single subtask within a decomposed task
 @available(macOS 26.0, iOS 26.0, *)
-public struct DecomposedSubtask: Sendable, Identifiable {
+public struct DecomposedSubtask: Sendable, Identifiable, Codable {
     /// Unique identifier for this subtask
     public let id: UUID
     
@@ -57,7 +57,7 @@ public struct DecomposedSubtask: Sendable, Identifiable {
 
 /// Represents a complete task decomposition with subtasks and execution order
 @available(macOS 26.0, iOS 26.0, *)
-public struct TaskDecomposition: Sendable {
+public struct TaskDecomposition: Sendable, Codable {
     /// All subtasks in this decomposition
     public let subtasks: [DecomposedSubtask]
     
@@ -129,7 +129,7 @@ public struct TaskDecomposition: Sendable {
 
 /// Metrics about delegation performance
 @available(macOS 26.0, iOS 26.0, *)
-public struct DelegationMetrics: Sendable {
+public struct DelegationMetrics: Sendable, Codable {
     /// Number of subtasks created
     public let subtasksCreated: Int
     
@@ -167,7 +167,7 @@ public struct DelegationMetrics: Sendable {
 
 /// Execution time breakdown for delegation
 @available(macOS 26.0, iOS 26.0, *)
-public struct ExecutionTimeBreakdown: Sendable {
+public struct ExecutionTimeBreakdown: Sendable, Codable {
     /// Time spent in coordinator analysis
     public let coordinatorAnalysisTime: TimeInterval
     

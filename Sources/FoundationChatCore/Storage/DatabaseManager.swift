@@ -34,6 +34,7 @@ public class DatabaseManager {
     private let conversationTokenUsage = Expression<Int?>("token_usage")
     
     /// Message table columns
+    private let messageOrchestrationState = Expression<String?>("orchestration_state")
     private let messageId = Expression<UUID>("id")
     private let messageConversationId = Expression<UUID>("conversation_id")
     private let messageRole = Expression<String>("role")
@@ -85,6 +86,17 @@ public class DatabaseManager {
     
     /// Initialize the database and create tables if they don't exist
     private func initializeDatabase() throws {
+        // #region debug log
+        let logDbPath = dbPath
+        Task { @Sendable in
+            await DebugLogger.shared.log(
+                location: "DatabaseManager.swift:initializeDatabase",
+                message: "initializeDatabase starting",
+                hypothesisId: "A",
+                data: ["dbPath": logDbPath]
+            )
+        }
+        // #endregion
         
         // Create conversations table
         try db.run(conversations.create(ifNotExists: true) { t in
@@ -99,11 +111,28 @@ public class DatabaseManager {
         })
         
         // Migrate existing databases: add new columns if they don't exist
+        // #region debug log
         do {
             try db.run("ALTER TABLE conversations ADD COLUMN agent_configuration TEXT")
-        } catch {
+            Task {
+                await DebugLogger.shared.log(
+                    location: "DatabaseManager.swift:initializeDatabase",
+                    message: "ALTER TABLE agent_configuration succeeded",
+                    hypothesisId: "A"
+                )
+            }
+        } catch let error {
             // Column already exists, ignore
+            Task {
+                await DebugLogger.shared.log(
+                    location: "DatabaseManager.swift:initializeDatabase",
+                    message: "ALTER TABLE agent_configuration failed (expected if column exists)",
+                    hypothesisId: "A",
+                    data: ["error": "\(error)"]
+                )
+            }
         }
+        // #endregion
         
         do {
             try db.run("ALTER TABLE conversations ADD COLUMN summary TEXT")
@@ -131,6 +160,13 @@ public class DatabaseManager {
         // Migrate existing databases: add attachments column if it doesn't exist
         do {
             try db.run("ALTER TABLE messages ADD COLUMN attachments TEXT")
+        } catch {
+            // Column already exists, ignore
+        }
+        
+        // Migrate existing databases: add orchestration_state column if it doesn't exist
+        do {
+            try db.run("ALTER TABLE messages ADD COLUMN orchestration_state TEXT")
         } catch {
             // Column already exists, ignore
         }
@@ -405,6 +441,40 @@ public class DatabaseManager {
         // Update conversation's updated_at timestamp
         let conversation = conversations.filter(self.conversationId == conversationId)
         try db.run(conversation.update(conversationUpdatedAt <- Date()))
+    }
+    
+    /// Save orchestration state for a message
+    /// - Parameters:
+    ///   - state: The orchestration state to save
+    ///   - messageId: The message ID
+    public func saveOrchestrationState(_ state: OrchestrationState, for messageId: UUID) throws {
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(state)
+        guard let jsonString = String(data: data, encoding: .utf8) else {
+            throw NSError(domain: "DatabaseManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode orchestration state"])
+        }
+        
+        let updateQuery = messages.filter(self.messageId == messageId)
+        try db.run(updateQuery.update(messageOrchestrationState <- jsonString))
+    }
+    
+    /// Load orchestration states for all messages in a conversation
+    /// - Parameter conversationId: The conversation ID
+    /// - Returns: Dictionary mapping message ID to orchestration state
+    public func loadOrchestrationStates(for conversationId: UUID) throws -> [UUID: OrchestrationState] {
+        var result: [UUID: OrchestrationState] = [:]
+        
+        let query = messages.filter(messageConversationId == conversationId)
+        for row in try db.prepare(query) {
+            let messageId = row[messageId]
+            if let stateJson = try? row.get(messageOrchestrationState),
+               let data = stateJson.data(using: .utf8),
+               let state = try? JSONDecoder().decode(OrchestrationState.self, from: data) {
+                result[messageId] = state
+            }
+        }
+        
+        return result
     }
     
     /// Save file metadata to the database

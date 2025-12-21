@@ -13,6 +13,17 @@ struct ConversationListView: View {
     @ObservedObject var viewModel: ChatViewModel
     @State private var hoveredId: UUID?
     @State private var editingTitle = ""
+    @AppStorage("preferredColorScheme") private var preferredColorScheme: String = "dark"
+    @Environment(\.colorScheme) private var systemColorScheme
+    
+    private var effectiveColorScheme: ColorScheme {
+        switch preferredColorScheme {
+        case "light": return .light
+        case "dark": return .dark
+        case "system": return systemColorScheme
+        default: return .dark
+        }
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -20,7 +31,7 @@ struct ConversationListView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 12))
-                    .foregroundColor(Theme.textSecondary)
+                    .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                 
                 TextField("Search", text: Binding(
                     get: { viewModel.searchQuery },
@@ -28,20 +39,20 @@ struct ConversationListView: View {
                 ))
                 .textFieldStyle(.plain)
                 .font(Theme.captionFont)
-                .foregroundColor(Theme.textPrimary)
+                .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                 
                 if !viewModel.searchQuery.isEmpty {
                     Button(action: { viewModel.searchConversations("") }) {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 12))
-                            .foregroundColor(Theme.textSecondary)
+                            .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Theme.surfaceElevated)
+            .background(Theme.surfaceElevated(for: effectiveColorScheme))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .padding(.horizontal, 12)
             .padding(.top, 12)
@@ -57,6 +68,7 @@ struct ConversationListView: View {
                             isHovered: hoveredId == conversation.id,
                             isEditing: viewModel.editingConversationId == conversation.id,
                             editingTitle: $editingTitle,
+                            colorScheme: effectiveColorScheme,
                             onSelect: {
                                 viewModel.selectedConversationId = conversation.id
                             },
@@ -83,7 +95,7 @@ struct ConversationListView: View {
                 .padding(.vertical, 4)
             }
         }
-        .background(Theme.surface)
+        .background(Theme.surface(for: effectiveColorScheme))
         .navigationTitle("Chats")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -93,7 +105,7 @@ struct ConversationListView: View {
                     }
                 }) {
                     Image(systemName: "plus")
-                        .foregroundColor(Theme.textSecondary)
+                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("n", modifiers: .command)
@@ -124,6 +136,7 @@ struct ConversationRow: View {
     let isHovered: Bool
     let isEditing: Bool
     @Binding var editingTitle: String
+    let colorScheme: ColorScheme
     let onSelect: () -> Void
     let onDelete: () -> Void
     let onRename: () -> Void
@@ -138,7 +151,7 @@ struct ConversationRow: View {
                 TextField("Title", text: $editingTitle)
                     .textFieldStyle(.plain)
                     .font(Theme.titleFont)
-                    .foregroundColor(Theme.textPrimary)
+                    .foregroundColor(Theme.textPrimary(for: colorScheme))
                     .focused($isTitleFocused)
                     .onSubmit { onFinishRename() }
                     .onExitCommand { onCancelRename() }
@@ -147,12 +160,12 @@ struct ConversationRow: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(conversation.title)
                         .font(Theme.titleFont)
-                        .foregroundColor(Theme.textPrimary)
+                        .foregroundColor(Theme.textPrimary(for: colorScheme))
                         .lineLimit(1)
                     
                     Text(conversation.updatedAt, style: .relative)
                         .font(Theme.captionFont)
-                        .foregroundColor(Theme.textSecondary)
+                        .foregroundColor(Theme.textSecondary(for: colorScheme))
                 }
             }
             
@@ -162,7 +175,7 @@ struct ConversationRow: View {
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                         .font(.system(size: 11))
-                        .foregroundColor(Theme.textSecondary)
+                        .foregroundColor(Theme.textSecondary(for: colorScheme))
                 }
                 .buttonStyle(.plain)
                 .help("Delete conversation")
@@ -173,7 +186,7 @@ struct ConversationRow: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? Theme.accent.opacity(0.3) : (isHovered ? Theme.surfaceElevated : Color.clear))
+                .fill(isSelected ? Theme.accent(for: colorScheme).opacity(0.3) : (isHovered ? Theme.surfaceElevated(for: colorScheme) : Color.clear))
         )
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }

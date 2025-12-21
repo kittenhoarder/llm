@@ -33,11 +33,13 @@ public actor AgentOrchestrator {
     ///   - task: The task to execute
     ///   - context: Shared context
     ///   - agentIds: Optional specific agent IDs to use (if nil, selects automatically)
+    ///   - progressTracker: Optional progress tracker for visualization
     /// - Returns: Result of execution
     public func execute(
         task: AgentTask,
         context: AgentContext,
-        agentIds: [UUID]? = nil
+        agentIds: [UUID]? = nil,
+        progressTracker: OrchestrationProgressTracker? = nil
     ) async throws -> AgentResult {
         // Get agents to use
         let agents: [any Agent]
@@ -57,8 +59,13 @@ public actor AgentOrchestrator {
         // Get or create pattern
         let pattern = currentPattern ?? createDefaultPattern(agents: agents)
         
-        // Execute using pattern
-        return try await pattern.execute(task: task, agents: agents, context: context)
+        // Execute using pattern - all patterns now support optional progress tracker
+        return try await pattern.execute(
+            task: task,
+            agents: agents,
+            context: context,
+            progressTracker: progressTracker
+        )
     }
     
     /// Select appropriate agents for a task

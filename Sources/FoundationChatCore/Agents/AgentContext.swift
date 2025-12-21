@@ -98,7 +98,7 @@ public struct AgentTask: Sendable {
 
 /// Result from an agent processing a task
 @available(macOS 26.0, iOS 26.0, *)
-public struct AgentResult: Sendable {
+public struct AgentResult: Sendable, Codable {
     /// The agent that produced this result
     public let agentId: UUID
     
@@ -120,8 +120,13 @@ public struct AgentResult: Sendable {
     /// Tool calls made during processing
     public var toolCalls: [ToolCall]
     
-    /// Updated context after processing
+    /// Updated context after processing (not persisted)
     public var updatedContext: AgentContext?
+    
+    enum CodingKeys: String, CodingKey {
+        case agentId, taskId, content, success, error, data, toolCalls
+        // updatedContext is excluded from encoding
+    }
     
     public init(
         agentId: UUID,

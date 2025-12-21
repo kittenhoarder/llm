@@ -20,6 +20,14 @@ public class ChatViewModel: ObservableObject {
     @Published var showDeleteConfirmation = false
     @Published var conversationToDelete: UUID?
     
+    // Orchestration visualization state
+    @Published var orchestrationState: OrchestrationState?
+    @Published var showOrchestrationDiagram: Bool = false
+    @Published var orchestrationStateByMessage: [UUID: OrchestrationState] = [:]
+    
+    // Single-agent mode: track agent name per message
+    @Published var agentNameByMessage: [UUID: String] = [:]
+    
     private var modelService: ModelService?
     private let conversationService: ConversationService
     /// Use shared AgentService instance to prevent duplicate agent registration
@@ -27,6 +35,9 @@ public class ChatViewModel: ObservableObject {
         return AgentService.shared
     }
     @AppStorage("useContextualConversations") private var useContextualConversations: Bool = true
+    
+    // Track progress subscriptions per conversation
+    private var progressTrackingTasks: [UUID: Task<Void, Never>] = [:]
     
     /// Get or create ModelService instance (async to avoid blocking)
     private func getModelService() async -> ModelService {
@@ -115,6 +126,22 @@ public class ChatViewModel: ObservableObject {
     func loadConversations() async {
         do {
             conversations = try conversationService.loadConversations()
+            
+            // Load orchestration states for all conversations
+            for conversation in conversations {
+                do {
+                    let states = try conversationService.loadOrchestrationStates(for: conversation.id)
+                    for (messageId, state) in states {
+                        orchestrationStateByMessage[messageId] = state
+                    }
+                    if !states.isEmpty {
+                        print("📊 Loaded \(states.count) orchestration states for conversation \(conversation.id)")
+                    }
+                } catch {
+                    print("⚠️ Failed to load orchestration states for conversation \(conversation.id): \(error)")
+                }
+            }
+            
             if selectedConversationId == nil, let first = conversations.first {
                 selectedConversationId = first.id
             }
@@ -432,6 +459,9 @@ public class ChatViewModel: ObservableObject {
     private func sendMessageToConversation(_ text: String, attachments: [FileAttachment], conversationId: UUID) async {
         isLoading = true
         
+        // Clear previous orchestration state when starting a new message
+        orchestrationState = nil
+        
         let userMessage = Message(role: .user, content: text, attachments: attachments)
         
         if let index = conversations.firstIndex(where: { $0.id == conversationId }) {
@@ -449,19 +479,49 @@ public class ChatViewModel: ObservableObject {
             let conversation = conversations.first(where: { $0.id == conversationId })
             let isAgentConversation = conversation?.conversationType != .chat && conversation?.agentConfiguration != nil
             
+            print("💬 Conversation check - Type: \(conversation?.conversationType.rawValue ?? "nil"), Has Config: \(conversation?.agentConfiguration != nil), Is Agent: \(isAgentConversation)")
+            
             let response: ModelResponse
             if isAgentConversation, let conv = conversation, let config = conv.agentConfiguration {
                 // Check useCoordinator setting to determine routing
                 let useCoordinator = UserDefaults.standard.object(forKey: UserDefaultsKey.useCoordinator) as? Bool ?? false
+                print("💬 useCoordinator: \(useCoordinator), pattern: \(config.orchestrationPattern.rawValue), agents: \(config.selectedAgents.count)")
                 
                 if useCoordinator && config.orchestrationPattern == .orchestrator {
                     // Orchestrator mode: Use AgentService with orchestrator pattern
                     print("🤖 Using orchestrator mode for message processing...")
-                let service = agentService
-                print("🤖 AgentService obtained, calling processMessage()...")
-                let result = try await service.processMessage(text, conversationId: conversationId, conversation: conv)
-                print("✅ AgentService.processMessage() completed")
-                response = ModelResponse(content: result.content, toolCalls: result.toolCalls)
+                    print("📊 Initializing orchestration visualization...")
+                    
+                    // Create progress tracker for visualization
+                    let progressTracker = OrchestrationProgressTracker()
+                    let progressStream = await progressTracker.startTracking()
+                    
+                    // Initialize orchestration state
+                    orchestrationState = OrchestrationState(currentPhase: .decision)
+                    showOrchestrationDiagram = true
+                    print("📊 Orchestration state initialized: \(orchestrationState != nil)")
+                    
+                    // Subscribe to progress events
+                    let trackingTask = Task { @MainActor in
+                        for await event in progressStream {
+                            await self.handleProgressEvent(event, conversationId: conversationId)
+                        }
+                    }
+                    progressTrackingTasks[conversationId] = trackingTask
+                    
+                    let service = agentService
+                    print("🤖 AgentService obtained, calling processMessage()...")
+                    let result = try await service.processMessage(text, conversationId: conversationId, conversation: conv, progressTracker: progressTracker)
+                    print("✅ AgentService.processMessage() completed")
+                    
+                    // Note: We'll store the final state with the assistant message ID after it's created
+                    // Keep orchestrationState alive for now so the diagram shows during processing
+                    
+                    // Clean up tracking task
+                    progressTrackingTasks[conversationId]?.cancel()
+                    progressTrackingTasks.removeValue(forKey: conversationId)
+                    
+                    response = ModelResponse(content: result.content, toolCalls: result.toolCalls)
                 } else if let singleAgentId = config.selectedAgents.first, config.selectedAgents.count == 1 {
                     // Single-agent mode: Use direct agent processing (no orchestrator)
                     print("🤖 Using single-agent mode for message processing...")
@@ -487,6 +547,13 @@ public class ChatViewModel: ObservableObject {
                     let fileReferences = attachments.map { $0.sandboxPath }
                     let result = try await service.processSingleAgentMessage(text, agentId: singleAgentId, conversationId: conversationId, conversation: conv, fileReferences: fileReferences)
                     print("✅ AgentService.processSingleAgentMessage() completed")
+                    
+                    // Get agent name for display
+                    let agents = await service.getAvailableAgents()
+                    if let agent = agents.first(where: { $0.id == singleAgentId }) {
+                        agentNameByMessage[userMessage.id] = agent.name
+                    }
+                    
                     response = ModelResponse(content: result.content, toolCalls: result.toolCalls)
                 } else {
                     // Fallback: Use regular ModelService
@@ -543,6 +610,50 @@ public class ChatViewModel: ObservableObject {
                     conversations[index].generateTitle()
                 }
                 
+                // Store orchestration state with the assistant message ID (for persistence)
+                if let finalState = orchestrationState {
+                    orchestrationStateByMessage[assistantMessage.id] = finalState
+                    print("📊 Stored orchestration state for message \(assistantMessage.id)")
+                    print("📊 Stored state has \(finalState.decomposition?.subtasks.count ?? 0) subtasks")
+                    // #region debug log
+                    await DebugLogger.shared.log(
+                        location: "ChatViewModel.swift:sendMessage",
+                        message: "Stored orchestration state with message",
+                        hypothesisId: "G",
+                        data: [
+                            "messageId": assistantMessage.id.uuidString,
+                            "subtaskCount": finalState.decomposition?.subtasks.count ?? 0,
+                            "hasDecomposition": finalState.decomposition != nil,
+                            "currentPhase": finalState.currentPhase.rawValue
+                        ]
+                    )
+                    // #endregion
+                    
+                    // Persist orchestration state to database
+                    do {
+                        try conversationService.saveOrchestrationState(finalState, for: assistantMessage.id)
+                        print("📊 Persisted orchestration state to database for message \(assistantMessage.id)")
+                    } catch {
+                        print("⚠️ Failed to persist orchestration state: \(error)")
+                    }
+                    
+                    // Store token usage from metrics
+                    if let metrics = finalState.metrics {
+                        conversations[index].tokenUsage = metrics.totalTokens
+                        print("📊 Stored token usage: \(metrics.totalTokens) tokens, savings: \(String(format: "%.2f", metrics.tokenSavingsPercentage))%")
+                    }
+                } else {
+                    print("⚠️ No orchestration state to store for message \(assistantMessage.id)")
+                    // #region debug log
+                    await DebugLogger.shared.log(
+                        location: "ChatViewModel.swift:sendMessage",
+                        message: "No orchestration state to store",
+                        hypothesisId: "G",
+                        data: ["messageId": assistantMessage.id.uuidString]
+                    )
+                    // #endregion
+                }
+                
                 do {
                     try conversationService.addMessage(assistantMessage, to: conversationId)
                     try conversationService.updateConversation(conversations[index])
@@ -557,10 +668,96 @@ public class ChatViewModel: ObservableObject {
             let errorMessage = Message(role: .assistant, content: friendlyMessage, responseTime: responseTime)
             if let index = conversations.firstIndex(where: { $0.id == conversationId }) {
                 conversations[index].messages.append(errorMessage)
+                
+                // Store orchestration state even on error (if available)
+                if let finalState = orchestrationState {
+                    orchestrationStateByMessage[errorMessage.id] = finalState
+                }
             }
         }
         
         isLoading = false
+        
+        // Don't clear orchestration state immediately - keep it for the last message
+        // It will be cleared when a new message starts or conversation changes
+    }
+    
+    // MARK: - Orchestration Progress Handling
+    
+    /// Handle progress events from orchestration
+    private func handleProgressEvent(_ event: OrchestrationProgressEvent, conversationId: UUID) async {
+        var state = orchestrationState ?? OrchestrationState(currentPhase: .decision)
+        
+        print("📊 Handling progress event: \(String(describing: event))")
+        
+        switch event {
+        case .delegationDecision(let shouldDelegate, let reason):
+            state.shouldDelegate = shouldDelegate
+            state.delegationReason = reason
+            state.currentPhase = shouldDelegate ? .analysis : .complete
+            
+        case .coordinatorAnalysisStarted:
+            state.currentPhase = .analysis
+            
+        case .coordinatorAnalysisCompleted(let analysis):
+            state.coordinatorAnalysis = analysis
+            state.currentPhase = .decomposition
+            
+        case .taskDecomposition(let decomposition):
+            state.decomposition = decomposition
+            state.parallelGroups = decomposition.getParallelizableGroups()
+            // Initialize all subtasks as pending
+            for subtask in decomposition.subtasks {
+                if state.subtaskStates[subtask.id] == nil {
+                    state.subtaskStates[subtask.id] = .pending
+                }
+            }
+            state.currentPhase = .execution
+            // #region debug log
+            await DebugLogger.shared.log(
+                location: "ChatViewModel.swift:handleProgressEvent",
+                message: "Task decomposition received and stored",
+                hypothesisId: "G",
+                data: [
+                    "subtaskCount": decomposition.subtasks.count,
+                    "hasDecomposition": state.decomposition != nil,
+                    "parallelGroupsCount": state.parallelGroups.count
+                ]
+            )
+            // #endregion
+            
+        case .subtaskPruned(let subtaskId, _):
+            // Remove pruned subtask from state
+            state.subtaskStates.removeValue(forKey: subtaskId)
+            
+        case .subtaskStarted(let subtask, let agentId, let agentName):
+            state.subtaskStates[subtask.id] = .inProgress(agentId: agentId, agentName: agentName, startTime: Date())
+            state.currentPhase = .execution
+            
+        case .subtaskCompleted(let subtask, let result):
+            state.subtaskStates[subtask.id] = .completed(result)
+            state.completedSubtasks[subtask.id] = result
+            
+        case .subtaskFailed(let subtask, let error):
+            state.subtaskStates[subtask.id] = .failed(error)
+            
+        case .synthesisStarted:
+            state.currentPhase = .synthesis
+            
+        case .synthesisCompleted:
+            state.currentPhase = .synthesis
+            
+        case .orchestrationCompleted(let metrics):
+            state.metrics = metrics
+            state.currentPhase = .complete
+            
+        case .orchestrationFailed(let error):
+            state.error = error
+            state.currentPhase = .failed
+        }
+        
+        orchestrationState = state
+        print("📊 Updated orchestration state - Phase: \(state.currentPhase.rawValue), Subtasks: \(state.subtaskStates.count)")
     }
     
     // MARK: - Message Actions

@@ -16,7 +16,8 @@ public struct CollaborativePattern: OrchestrationPattern {
     public func execute(
         task: AgentTask,
         agents: [any Agent],
-        context: AgentContext
+        context: AgentContext,
+        progressTracker: OrchestrationProgressTracker? = nil
     ) async throws -> AgentResult {
         guard !agents.isEmpty else {
             throw AgentOrchestratorError.noAgentsAvailable
