@@ -51,6 +51,7 @@ public actor TaskDecompositionParser {
     /// Extract subtasks from natural language text
     private func extractSubtasks(from text: String, availableAgents: [any Agent]) async -> [DecomposedSubtask] {
         var subtasks: [DecomposedSubtask] = []
+        var subtaskNumberToID: [Int: UUID] = [:] // Mapping for dependency resolution
         
         // Debug logging
         await DebugLogger.shared.log(
@@ -63,36 +64,146 @@ public actor TaskDecompositionParser {
             ]
         )
         
-        // Pattern 1: Numbered list (1., 2., etc.)
-        let numberedPattern = #"(?m)^\s*(\d+)\.\s+(.+?)(?=\n\s*\d+\.|$)"#
-        if let regex = try? NSRegularExpression(pattern: numberedPattern, options: []) {
-            let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        // Pattern 0: Markdown subtask headers (### or #### Subtask N: Description)
+        // This pattern extracts structured subtasks with headers like "### Subtask 1: ..." or "#### Subtask 1: ..."
+        // It extracts the full section including metadata for dependency parsing
+        let markdownSubtaskHeaderPattern = #"(?m)^\s*#{3,4}\s+Subtask\s+(\d+)\s*:"#
+        if let headerRegex = try? NSRegularExpression(pattern: markdownSubtaskHeaderPattern, options: []) {
+            let headerMatches = headerRegex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            
+            // Build mapping of subtask number to section text for dependency extraction
+            var subtaskSections: [Int: String] = [:]
+            var subtaskNumbers: [Int] = []
+            
+            // Extract each subtask section (from header to next header or end of text)
+            for (index, match) in headerMatches.enumerated() {
+                if match.numberOfRanges >= 2,
+                   let numberRange = Range(match.range(at: 1), in: text),
+                   let subtaskNumber = Int(String(text[numberRange])) {
+                    
+                    // Find the range from this header to the next header (or end of text)
+                    let sectionStart = match.range.location
+                    let sectionEnd: Int
+                    if index < headerMatches.count - 1 {
+                        sectionEnd = headerMatches[index + 1].range.location
+                    } else {
+                        sectionEnd = text.count
+                    }
+                    
+                    let sectionRange = NSRange(location: sectionStart, length: sectionEnd - sectionStart)
+                    if let sectionContent = Range(sectionRange, in: text) {
+                        let sectionText = String(text[sectionContent])
+                        subtaskSections[subtaskNumber] = sectionText
+                        subtaskNumbers.append(subtaskNumber)
+                    }
+                }
+            }
+            
+            // Sort by subtask number to maintain order
+            subtaskNumbers.sort()
             
             // Debug logging
             await DebugLogger.shared.log(
                 location: "TaskDecompositionParser.swift:extractSubtasks",
-                message: "Numbered pattern matches",
+                message: "Markdown subtask pattern matches",
                 hypothesisId: "D",
                 data: [
-                    "matchCount": matches.count,
-                    "matches": matches.prefix(10).map { match in
-                        if match.numberOfRanges >= 3 {
-                            let contentRange = match.range(at: 2)
-                            if let content = Range(contentRange, in: text) {
-                                return String(text[content].prefix(100))
-                            }
-                        }
-                        return ""
-                    }
+                    "matchCount": headerMatches.count,
+                    "subtaskNumbers": subtaskNumbers
                 ]
             )
-            for match in matches {
-                if match.numberOfRanges >= 3 {
-                    let contentRange = match.range(at: 2)
-                    if let content = Range(contentRange, in: text) {
-                        let subtaskText = String(text[content])
-                        if let subtask = parseSubtaskText(subtaskText, availableAgents: availableAgents) {
-                            subtasks.append(subtask)
+            
+            // First pass: Parse all subtasks and build number-to-ID mapping
+            var parsedSubtasks: [(Int, DecomposedSubtask)] = []
+            for subtaskNumber in subtaskNumbers {
+                guard let sectionText = subtaskSections[subtaskNumber] else { continue }
+                
+                // Extract description from header (first line after "Subtask N:")
+                let headerPattern = #"Subtask\s+\d+\s*:\s*([^\n]+)"#
+                var description = ""
+                if let headerRegex = try? NSRegularExpression(pattern: headerPattern, options: []),
+                   let headerMatch = headerRegex.firstMatch(in: sectionText, range: NSRange(sectionText.startIndex..., in: sectionText)),
+                   headerMatch.numberOfRanges >= 2,
+                   let descRange = Range(headerMatch.range(at: 1), in: sectionText) {
+                    description = String(sectionText[descRange]).trimmingCharacters(in: .whitespaces)
+                }
+                
+                if !description.isEmpty {
+                    // Parse subtask without dependencies first (will add them in second pass)
+                    if var subtask = parseSubtaskText(description, availableAgents: availableAgents) {
+                        subtaskNumberToID[subtaskNumber] = subtask.id
+                        parsedSubtasks.append((subtaskNumber, subtask))
+                    } else {
+                        print("🔍 TaskDecompositionParser: Rejected subtask from markdown header: \(description.prefix(80))")
+                    }
+                }
+            }
+            
+            // Second pass: Extract dependencies and update subtasks
+            for (subtaskNumber, subtask) in parsedSubtasks {
+                var finalSubtask = subtask
+                if let sectionText = subtaskSections[subtaskNumber] {
+                    let dependencies = extractDependencies(
+                        from: sectionText,
+                        subtaskNumber: subtaskNumber,
+                        subtaskNumberToID: subtaskNumberToID
+                    )
+                    if !dependencies.isEmpty {
+                        // Create new subtask with dependencies
+                        finalSubtask = DecomposedSubtask(
+                            id: subtask.id,
+                            description: subtask.description,
+                            agentName: subtask.agentName,
+                            requiredCapabilities: subtask.requiredCapabilities,
+                            priority: subtask.priority,
+                            dependencies: dependencies,
+                            canExecuteInParallel: dependencies.isEmpty && subtask.canExecuteInParallel,
+                            estimatedTokenCost: subtask.estimatedTokenCost
+                        )
+                        print("🔗 TaskDecompositionParser: Subtask \(subtaskNumber) has \(dependencies.count) dependencies")
+                    }
+                }
+                subtasks.append(finalSubtask)
+            }
+            
+            // If we found subtasks with markdown pattern, don't fall back to other patterns
+            if !subtasks.isEmpty {
+                print("✅ TaskDecompositionParser: Found \(subtasks.count) subtasks via markdown pattern, skipping other patterns")
+            }
+        }
+        
+        // Pattern 1: Numbered list (1., 2., etc.) - only if markdown pattern didn't match
+        if subtasks.isEmpty {
+            let numberedPattern = #"(?m)^\s*(\d+)\.\s+(.+?)(?=\n\s*\d+\.|$)"#
+            if let regex = try? NSRegularExpression(pattern: numberedPattern, options: []) {
+                let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+                
+                // Debug logging
+                await DebugLogger.shared.log(
+                    location: "TaskDecompositionParser.swift:extractSubtasks",
+                    message: "Numbered pattern matches",
+                    hypothesisId: "D",
+                    data: [
+                        "matchCount": matches.count,
+                        "matches": matches.prefix(10).map { match in
+                            if match.numberOfRanges >= 3 {
+                                let contentRange = match.range(at: 2)
+                                if let content = Range(contentRange, in: text) {
+                                    return String(text[content].prefix(100))
+                                }
+                            }
+                            return ""
+                        }
+                    ]
+                )
+                for match in matches {
+                    if match.numberOfRanges >= 3 {
+                        let contentRange = match.range(at: 2)
+                        if let content = Range(contentRange, in: text) {
+                            let subtaskText = String(text[content])
+                            if let subtask = parseSubtaskText(subtaskText, availableAgents: availableAgents) {
+                                subtasks.append(subtask)
+                            }
                         }
                     }
                 }
@@ -157,6 +268,7 @@ public actor TaskDecompositionParser {
         }
         
         // If still no subtasks, try to split by paragraphs and treat each as a subtask
+        // But filter out metadata-heavy paragraphs
         if subtasks.isEmpty {
             let paragraphs = text.components(separatedBy: "\n\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             
@@ -171,6 +283,11 @@ public actor TaskDecompositionParser {
                 ]
             )
             for paragraph in paragraphs {
+                // Skip paragraphs that are mostly metadata
+                if isMetadataParagraph(paragraph) {
+                    print("🔍 TaskDecompositionParser: Skipping metadata paragraph: \(paragraph.prefix(80))")
+                    continue
+                }
                 if let subtask = parseSubtaskText(paragraph, availableAgents: availableAgents) {
                     subtasks.append(subtask)
                 }
@@ -219,8 +336,8 @@ public actor TaskDecompositionParser {
         // Extract capabilities
         let capabilities = extractCapabilities(from: trimmed)
         
-        // Detect dependencies
-        let dependencies = extractDependencies(from: trimmed)
+        // Dependencies will be extracted in second pass, so return empty for now
+        let dependencies: [UUID] = []
         
         // Detect if can execute in parallel (default to true unless dependencies exist)
         let canExecuteInParallel = dependencies.isEmpty && !containsSequentialKeywords(trimmed)
@@ -234,6 +351,43 @@ public actor TaskDecompositionParser {
         )
     }
     
+    /// Check if a paragraph is mostly metadata (not an actual subtask)
+    private func isMetadataParagraph(_ paragraph: String) -> Bool {
+        let lines = paragraph.components(separatedBy: .newlines)
+        let nonEmptyLines = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        
+        // If most lines are metadata fields, it's a metadata paragraph
+        var metadataLineCount = 0
+        for line in nonEmptyLines {
+            if isMetadataField(line) {
+                metadataLineCount += 1
+            }
+        }
+        
+        // If more than half the lines are metadata, skip this paragraph
+        if nonEmptyLines.count > 0 && Double(metadataLineCount) / Double(nonEmptyLines.count) > 0.5 {
+            return true
+        }
+        
+        // Also check if the paragraph starts with numbered metadata items
+        if let firstLine = nonEmptyLines.first, isMetadataField(firstLine) {
+            // If it starts with metadata and has multiple numbered items, it's likely all metadata
+            let numberedMetadataCount = nonEmptyLines.filter { line in
+                let numberedMetadataPattern = #"^\s*\d+\.\s*\*\*"#
+                if let regex = try? NSRegularExpression(pattern: numberedMetadataPattern, options: []) {
+                    return regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
+                }
+                return false
+            }.count
+            
+            if numberedMetadataCount >= 2 {
+                return true
+            }
+        }
+        
+        return false
+    }
+    
     /// Check if text is a metadata field (not an actual subtask)
     private func isMetadataField(_ text: String) -> Bool {
         let lowercased = text.lowercased()
@@ -241,13 +395,29 @@ public actor TaskDecompositionParser {
         let metadataPatterns = [
             "**capabilities needed:**",
             "**agent:**",
+            "**agent to handle:**",
             "**dependencies:**",
             "**dependencies on other subtasks:**",
             "**specific task description:**",
+            "**task description:**",
+            "**can run in parallel:**",
+            "**overall task flow:**",
+            "**initialization:**",
+            "**parallel execution:**",
+            "**completion of subtasks:**",
             "capabilities needed:",
             "agent:",
+            "agent to handle:",
             "dependencies:",
-            "specific task description:"
+            "dependencies on other subtasks:",
+            "specific task description:",
+            "task description:",
+            "can run in parallel:",
+            "this breakdown ensures",
+            "overall task flow",
+            "initialization:",
+            "parallel execution:",
+            "completion of subtasks:"
         ]
         
         // If text starts with a metadata pattern, it's likely a metadata field
@@ -257,11 +427,42 @@ public actor TaskDecompositionParser {
             }
         }
         
-        // Also check if it's very short and looks like a label
+        // Check for numbered metadata items (1. **Task Description:**, 2. **Agent:**, etc.)
+        let numberedMetadataPattern = #"^\s*\d+\.\s*\*\*"#
+        if let regex = try? NSRegularExpression(pattern: numberedMetadataPattern, options: []),
+           regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil {
+            return true
+        }
+        
+        // Check for lines that start with "- **" or "* **" (bullet points with bold metadata)
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("- **") || trimmed.hasPrefix("* **") {
+            return true
+        }
+        
+        // Check for lines that are just metadata labels with minimal content
         if text.count < 50 && (text.contains(":") || text.contains("**")) {
             // Check if it's mostly just a label with minimal content
             let parts = text.split(separator: ":")
             if parts.count == 2 && parts[1].trimmingCharacters(in: .whitespaces).count < 20 {
+                return true
+            }
+        }
+        
+        // Check for explanatory text that's not a task
+        let explanatoryPatterns = [
+            "this breakdown ensures",
+            "overall task flow",
+            "the task is divided",
+            "manageable parts",
+            "utilizing the right agent",
+            "provide a breakdown",
+            "certainly!",
+            "let's break down",
+            "format your response"
+        ]
+        for pattern in explanatoryPatterns {
+            if lowercased.contains(pattern) && text.count < 200 {
                 return true
             }
         }
@@ -327,12 +528,80 @@ public actor TaskDecompositionParser {
         return capabilities
     }
     
-    /// Extract dependencies from text (returns empty for now, as dependency parsing is complex)
-    private func extractDependencies(from text: String) -> [UUID] {
-        // TODO: Implement dependency extraction
-        // Look for patterns like "after X", "using results from Y", "depends on Z"
-        // For now, return empty array
-        return []
+    /// Extract dependencies from text
+    /// - Parameters:
+    ///   - text: The text to search for dependencies (full section text)
+    ///   - subtaskNumber: The current subtask number
+    ///   - subtaskNumberToID: Mapping of subtask numbers to their UUIDs
+    /// - Returns: Array of UUIDs for dependent subtasks
+    private func extractDependencies(
+        from text: String,
+        subtaskNumber: Int,
+        subtaskNumberToID: [Int: UUID]
+    ) -> [UUID] {
+        var dependencyUUIDs: [UUID] = []
+        let lowercased = text.lowercased()
+        
+        // Extract subtask numbers from dependency patterns
+        let dependencyPatterns = [
+            #"dependencies?\s*:\s*subtask\s+(\d+)"#,
+            #"dependencies?\s+on\s+(?:other\s+)?subtasks?\s*:\s*subtask\s+(\d+)"#,
+            #"depends?\s+on\s*:\s*subtask\s+(\d+)"#,
+            #"depends?\s+on\s+subtask\s+(\d+)"#,
+            #"after\s+subtask\s+(\d+)"#,
+            #"following\s+subtask\s+(\d+)"#
+        ]
+        
+        var foundNumbers: Set<Int> = []
+        
+        for pattern in dependencyPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let matches = regex.matches(in: lowercased, range: NSRange(lowercased.startIndex..., in: lowercased))
+                for match in matches {
+                    if match.numberOfRanges >= 2,
+                       let numberRange = Range(match.range(at: 1), in: lowercased),
+                       let depNumber = Int(String(lowercased[numberRange])),
+                       depNumber != subtaskNumber { // Don't depend on self
+                        foundNumbers.insert(depNumber)
+                    }
+                }
+            }
+        }
+        
+        // Also check for comma-separated lists like "Dependencies: Subtask 1, Subtask 2"
+        let listPattern = #"dependencies?\s*:\s*subtask\s+(\d+)(?:\s*,\s*subtask\s+(\d+))*"#
+        if let regex = try? NSRegularExpression(pattern: listPattern, options: [.caseInsensitive]) {
+            let matches = regex.matches(in: lowercased, range: NSRange(lowercased.startIndex..., in: lowercased))
+            for match in matches {
+                // First number is in group 1
+                if match.numberOfRanges >= 2,
+                   let firstRange = Range(match.range(at: 1), in: lowercased),
+                   let firstNum = Int(String(lowercased[firstRange])),
+                   firstNum != subtaskNumber {
+                    foundNumbers.insert(firstNum)
+                }
+                // Additional numbers in subsequent groups
+                for i in 2..<match.numberOfRanges {
+                    if let range = Range(match.range(at: i), in: lowercased),
+                       let num = Int(String(lowercased[range])),
+                       num != subtaskNumber {
+                        foundNumbers.insert(num)
+                    }
+                }
+            }
+        }
+        
+        // Convert subtask numbers to UUIDs
+        for depNumber in foundNumbers.sorted() {
+            if let depUUID = subtaskNumberToID[depNumber] {
+                dependencyUUIDs.append(depUUID)
+                print("🔗 TaskDecompositionParser: Subtask \(subtaskNumber) depends on Subtask \(depNumber)")
+            } else {
+                print("⚠️ TaskDecompositionParser: Could not find UUID for Subtask \(depNumber) (dependency of Subtask \(subtaskNumber))")
+            }
+        }
+        
+        return dependencyUUIDs
     }
     
     /// Check if text contains keywords indicating sequential execution

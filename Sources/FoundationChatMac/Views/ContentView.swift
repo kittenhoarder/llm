@@ -13,6 +13,7 @@ public struct ContentView: View {
     @State private var viewModel: ChatViewModel?
     @State private var showSettings = false
     @AppStorage("preferredColorScheme") private var preferredColorScheme: String = "dark"
+    @Environment(\.colorScheme) private var systemColorScheme
     
     public init() {
         print("🎨 ContentView initializing...")
@@ -20,6 +21,7 @@ public struct ContentView: View {
     
     public var body: some View {
         let _ = print("🎨 ContentView body rendering...")
+        let effectiveColorScheme = effectiveColorSchemeForTheme
         
         // Try to create viewModel lazily
         if viewModel == nil {
@@ -57,11 +59,11 @@ public struct ContentView: View {
         return AnyView(
         NavigationSplitView {
             ConversationListView(viewModel: vm)
-            .background(Theme.surface)
+            .background(Theme.surface(for: effectiveColorScheme))
         } detail: {
             ChatView(viewModel: vm)
         }
-        .background(Theme.background)
+        .background(Theme.background(for: effectiveColorScheme))
         .preferredColorScheme(colorScheme)
         .sheet(isPresented: $showSettings) {
             SettingsView()
@@ -79,7 +81,7 @@ public struct ContentView: View {
             ToolbarItem(placement: .navigation) {
                 Button(action: { showSettings = true }) {
                     Image(systemName: "gear")
-                        .foregroundColor(Theme.textSecondary)
+                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(",", modifiers: .command)
@@ -113,6 +115,20 @@ public struct ContentView: View {
             return .dark
         case "system":
             return nil
+        default:
+            return .dark
+        }
+    }
+    
+    /// Effective color scheme for theme colors (uses system when "system" is selected)
+    private var effectiveColorSchemeForTheme: ColorScheme {
+        switch preferredColorScheme {
+        case "light":
+            return .light
+        case "dark":
+            return .dark
+        case "system":
+            return systemColorScheme
         default:
             return .dark
         }

@@ -18,13 +18,24 @@ public struct ChatView: View {
     @FocusState private var isInputFocused: Bool
     @AppStorage("fontSizeAdjustment") private var fontSizeAdjustment: Double = 14
     @AppStorage("useContextualConversations") private var useContextualConversations: Bool = true
+    @AppStorage("preferredColorScheme") private var preferredColorScheme: String = "dark"
+    @Environment(\.colorScheme) private var systemColorScheme
+    
+    private var effectiveColorScheme: ColorScheme {
+        switch preferredColorScheme {
+        case "light": return .light
+        case "dark": return .dark
+        case "system": return systemColorScheme
+        default: return .dark
+        }
+    }
     
     public var body: some View {
         VStack(spacing: 0) {
             conversationContent
             inputArea
         }
-        .background(Theme.background)
+        .background(Theme.background(for: effectiveColorScheme))
         .navigationTitle(viewModel.currentConversation?.title ?? "New Chat")
     }
     
@@ -33,7 +44,7 @@ public struct ChatView: View {
         if let conversation = viewModel.currentConversation, !conversation.messages.isEmpty {
             messagesScrollView(conversation: conversation)
         } else {
-            EmptyConversationView(onNewChat: {
+            EmptyConversationView(colorScheme: effectiveColorScheme, onNewChat: {
                 isInputFocused = true
             })
         }
@@ -54,13 +65,57 @@ public struct ChatView: View {
                     }
                     
                     if viewModel.isLoading {
-                        LoadingIndicator()
+                        LoadingIndicator(colorScheme: effectiveColorScheme)
+                        
+                        // Show orchestration diagram during execution (before assistant message exists)
+                        if let orchestrationState = viewModel.orchestrationState {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Button(action: {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        viewModel.showOrchestrationDiagram.toggle()
+                                    }
+                                }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "flowchart")
+                                            .font(.system(size: 11))
+                                        Text(viewModel.showOrchestrationDiagram ? "Hide Orchestration" : "Show Orchestration")
+                                            .font(.system(size: 11))
+                                    }
+                                    .foregroundColor(Theme.accent(for: effectiveColorScheme))
+                                }
+                                .buttonStyle(.plain)
+                                
+                                if viewModel.showOrchestrationDiagram || !orchestrationState.isComplete {
+                                    OrchestrationDiagramView(state: orchestrationState, colorScheme: effectiveColorScheme)
+                                        .transition(.asymmetric(
+                                            insertion: .opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.95)),
+                                            removal: .opacity.combined(with: .move(edge: .top))
+                                        ))
+                                }
+                            }
+                            .padding(.top, 8)
+                            .padding(.leading, 60) // Align with assistant messages
+                            .onAppear {
+                                // Auto-expand diagram when orchestration is active
+                                if !orchestrationState.isComplete && !viewModel.showOrchestrationDiagram {
+                                    viewModel.showOrchestrationDiagram = true
+                                }
+                            }
+                            .onChange(of: orchestrationState.currentPhase) { oldPhase, newPhase in
+                                // Auto-show when orchestration starts or phase changes
+                                if newPhase != .complete && newPhase != .failed {
+                                    if !viewModel.showOrchestrationDiagram {
+                                        viewModel.showOrchestrationDiagram = true
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
             }
-            .background(Theme.background)
+            .background(Theme.background(for: effectiveColorScheme))
             .onChange(of: conversation.messages.count) {
                 if let lastMessage = conversation.messages.last {
                     withAnimation(.easeOut(duration: 0.2)) {
@@ -79,12 +134,18 @@ public struct ChatView: View {
         conversation: Conversation
     ) -> some View {
         let isLastMessage = index == totalCount - 1
+        let storedOrchestrationState = viewModel.orchestrationStateByMessage[message.id]
+        
         MessageView(
             message: message,
             isLastMessage: isLastMessage,
             conversationMessages: conversation.messages,
             fontSize: fontSizeAdjustment,
             useContextual: useContextualConversations,
+            colorScheme: effectiveColorScheme,
+            storedOrchestrationState: storedOrchestrationState,
+            agentName: viewModel.agentNameByMessage[message.id],
+            viewModel: viewModel,
             onCopy: { viewModel.copyMessageContent(message.content) },
             onRegenerate: message.role == .assistant && isLastMessage ? {
                 Task { await viewModel.regenerateLastResponse() }
@@ -99,6 +160,7 @@ public struct ChatView: View {
             isInputFocused: $isInputFocused,
             isLoading: viewModel.isLoading,
             fontSize: fontSizeAdjustment,
+            colorScheme: effectiveColorScheme,
             onSend: sendMessage,
             conversationId: viewModel.selectedConversationId
         )
@@ -156,17 +218,20 @@ struct FileChipView: View {
     let showRemoveButton: Bool
     let onRemove: (() -> Void)?
     let onClick: (() -> Void)?
+    let colorScheme: ColorScheme
     
     init(
         attachment: FileAttachment,
         showRemoveButton: Bool = false,
         onRemove: (() -> Void)? = nil,
-        onClick: (() -> Void)? = nil
+        onClick: (() -> Void)? = nil,
+        colorScheme: ColorScheme = .dark
     ) {
         self.attachment = attachment
         self.showRemoveButton = showRemoveButton
         self.onRemove = onRemove
         self.onClick = onClick
+        self.colorScheme = colorScheme
     }
     
     var body: some View {
@@ -174,19 +239,19 @@ struct FileChipView: View {
             // File icon
             Image(systemName: fileIcon)
                 .font(.system(size: 14))
-                .foregroundColor(Theme.textSecondary)
+                .foregroundColor(Theme.textSecondary(for: colorScheme))
                 .frame(width: 20, height: 20)
             
             // File name and size
             VStack(alignment: .leading, spacing: 2) {
                 Text(attachment.originalName)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Theme.textPrimary)
+                    .foregroundColor(Theme.textPrimary(for: colorScheme))
                     .lineLimit(1)
                 
                 Text(formatFileSize(attachment.fileSize))
                     .font(.system(size: 10))
-                    .foregroundColor(Theme.textSecondary)
+                    .foregroundColor(Theme.textSecondary(for: colorScheme))
             }
             
             Spacer()
@@ -196,7 +261,7 @@ struct FileChipView: View {
                 Button(action: onRemove) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 14))
-                        .foregroundColor(Theme.textSecondary)
+                        .foregroundColor(Theme.textSecondary(for: colorScheme))
                 }
                 .buttonStyle(.plain)
                 .help("Remove file")
@@ -204,11 +269,11 @@ struct FileChipView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Theme.surface)
+        .background(Theme.surface(for: colorScheme))
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(Theme.border, lineWidth: 1)
+                .stroke(Theme.border(for: colorScheme), lineWidth: 1)
         )
         .onTapGesture {
             onClick?()
@@ -259,8 +324,23 @@ struct MessageView: View {
     let conversationMessages: [Message]
     let fontSize: Double
     let useContextual: Bool
+    let colorScheme: ColorScheme
+    let storedOrchestrationState: OrchestrationState? // For completed messages
+    let agentName: String?
+    @ObservedObject var viewModel: ChatViewModel
     let onCopy: () -> Void
     let onRegenerate: (() -> Void)?
+    
+    @State private var showOrchestrationDiagram = false
+    
+    // Get the current orchestration state (live for last message, stored for others)
+    private var orchestrationState: OrchestrationState? {
+        if isLastMessage && message.role == .assistant {
+            return viewModel.orchestrationState ?? storedOrchestrationState
+        } else {
+            return storedOrchestrationState
+        }
+    }
     
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -273,11 +353,15 @@ struct MessageView: View {
                 if !message.attachments.isEmpty {
                     VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
                         ForEach(message.attachments) { attachment in
-                            FileChipView(attachment: attachment) {
-                                // On click: reveal in Finder
-                                let url = URL(fileURLWithPath: attachment.sandboxPath)
-                                NSWorkspace.shared.activateFileViewerSelecting([url])
-                            }
+                            FileChipView(
+                                attachment: attachment,
+                                onClick: {
+                                    // On click: reveal in Finder
+                                    let url = URL(fileURLWithPath: attachment.sandboxPath)
+                                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                                },
+                                colorScheme: colorScheme
+                            )
                         }
                     }
                 }
@@ -286,11 +370,11 @@ struct MessageView: View {
                 if !message.content.isEmpty {
                     Text(message.content)
                         .font(Theme.messageFont(size: fontSize))
-                        .foregroundColor(Theme.textPrimary)
+                        .foregroundColor(message.role == .user ? .white : Theme.textPrimary(for: colorScheme))
                         .textSelection(.enabled)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .background(message.role == .user ? Theme.userBubble : Theme.assistantBubble)
+                        .background(message.role == .user ? Theme.userBubble(for: colorScheme) : Theme.assistantBubble(for: colorScheme))
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 
@@ -303,6 +387,21 @@ struct MessageView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 
+                // Agent indicator badge (for single-agent mode)
+                if message.role == .assistant, let agentName = agentName, orchestrationState == nil {
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 9))
+                        Text(agentName)
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundColor(Theme.accent(for: colorScheme))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Theme.accent(for: colorScheme).opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                
                 if !message.toolCalls.isEmpty {
                     let toolNames = message.toolCalls.map { ToolNameMapper.friendlyName(for: $0.toolName) }
                     HStack(spacing: 4) {
@@ -311,7 +410,91 @@ struct MessageView: View {
                         Text(toolNames.joined(separator: ", "))
                     }
                     .font(Theme.captionFont)
-                    .foregroundColor(Theme.textSecondary)
+                    .foregroundColor(Theme.textSecondary(for: colorScheme))
+                }
+                
+                // Orchestration diagram (for assistant messages with orchestration)
+                if message.role == .assistant {
+                    // #region debug log
+                    let _ = {
+                        Task {
+                            await DebugLogger.shared.log(
+                                location: "ChatView.swift:MessageView",
+                                message: "Checking orchestration state for diagram",
+                                hypothesisId: "G",
+                                data: [
+                                    "isLastMessage": isLastMessage,
+                                    "hasOrchestrationState": orchestrationState != nil,
+                                    "hasStoredState": storedOrchestrationState != nil,
+                                    "hasViewModelState": viewModel.orchestrationState != nil,
+                                    "decompositionCount": orchestrationState?.decomposition?.subtasks.count ?? 0,
+                                    "currentPhase": orchestrationState?.currentPhase.rawValue ?? "nil"
+                                ]
+                            )
+                        }
+                    }()
+                    // #endregion
+                    
+                    if let state = orchestrationState {
+                        VStack(alignment: .leading, spacing: 8) {
+                            // Toggle button
+                            Button(action: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showOrchestrationDiagram.toggle()
+                                }
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "flowchart")
+                                        .font(.system(size: 11))
+                                    Text(showOrchestrationDiagram ? "Hide Orchestration" : "Show Orchestration")
+                                        .font(.system(size: 11))
+                                }
+                                .foregroundColor(Theme.accent(for: colorScheme))
+                            }
+                            .buttonStyle(.plain)
+                            
+                            // Diagram view - auto-show if orchestration is in progress or if explicitly shown
+                            if showOrchestrationDiagram || !state.isComplete {
+                                OrchestrationDiagramView(state: state, colorScheme: colorScheme)
+                                    .transition(.asymmetric(
+                                        insertion: .opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.95)),
+                                        removal: .opacity.combined(with: .move(edge: .top))
+                                    ))
+                            }
+                        }
+                        .padding(.top, 4)
+                        .onAppear {
+                            // Auto-expand diagram when it first appears if orchestration is active
+                            if !state.isComplete {
+                                showOrchestrationDiagram = true
+                            }
+                        }
+                        .onChange(of: state.currentPhase) { oldPhase, newPhase in
+                            // Auto-show when orchestration starts or phase changes
+                            if newPhase != .complete && newPhase != .failed {
+                                if !showOrchestrationDiagram {
+                                    showOrchestrationDiagram = true
+                                }
+                            }
+                        }
+                    } else {
+                        // #region debug log
+                        let _ = {
+                            Task {
+                                await DebugLogger.shared.log(
+                                    location: "ChatView.swift:MessageView",
+                                    message: "Orchestration state is nil, diagram not shown",
+                                    hypothesisId: "G",
+                                    data: [
+                                        "isLastMessage": isLastMessage,
+                                        "hasStoredState": storedOrchestrationState != nil,
+                                        "hasViewModelState": viewModel.orchestrationState != nil
+                                    ]
+                                )
+                            }
+                        }()
+                        // #endregion
+                    }
                 }
             }
             
@@ -334,7 +517,8 @@ struct MessageView: View {
             MessageStatisticsView(
                 message: message,
                 conversationMessages: conversationMessages,
-                useContextual: useContextual
+                useContextual: useContextual,
+                colorScheme: colorScheme
             )
             
             Spacer()
@@ -345,7 +529,7 @@ struct MessageView: View {
                     Button(action: onCopy) {
                         Image(systemName: "doc.on.doc")
                             .font(.system(size: 12))
-                            .foregroundColor(Theme.textSecondary)
+                            .foregroundColor(Theme.textSecondary(for: colorScheme))
                             .frame(width: 24, height: 24)
                     }
                     .buttonStyle(.plain)
@@ -355,7 +539,7 @@ struct MessageView: View {
                         Button(action: onRegenerate) {
                             Image(systemName: "arrow.clockwise")
                                 .font(.system(size: 12))
-                                .foregroundColor(Theme.textSecondary)
+                                .foregroundColor(Theme.textSecondary(for: colorScheme))
                                 .frame(width: 24, height: 24)
                         }
                         .buttonStyle(.plain)
@@ -376,33 +560,34 @@ struct MessageStatisticsView: View {
     let message: Message
     let conversationMessages: [Message]
     let useContextual: Bool
+    let colorScheme: ColorScheme
     
     var body: some View {
         HStack(spacing: 6) {
             // Timestamp
             Text(timeString)
                 .font(.system(size: 9))
-                .foregroundColor(Theme.textSecondary.opacity(0.6))
+                .foregroundColor(Theme.textSecondary(for: colorScheme).opacity(0.6))
             
             // Bullet separator
             Text("•")
                 .font(.system(size: 9))
-                .foregroundColor(Theme.textSecondary.opacity(0.4))
+                .foregroundColor(Theme.textSecondary(for: colorScheme).opacity(0.4))
             
             // Context size (estimated tokens)
             Text("\(estimatedTokens) tokens")
                 .font(.system(size: 9))
-                .foregroundColor(Theme.textSecondary.opacity(0.6))
+                .foregroundColor(Theme.textSecondary(for: colorScheme).opacity(0.6))
             
             // Response time (for assistant messages only)
             if let responseTime = message.responseTime {
                 Text("•")
                     .font(.system(size: 9))
-                    .foregroundColor(Theme.textSecondary.opacity(0.4))
+                    .foregroundColor(Theme.textSecondary(for: colorScheme).opacity(0.4))
                 
                 Text(String(format: "%.1fs", responseTime))
                     .font(.system(size: 9))
-                    .foregroundColor(Theme.textSecondary.opacity(0.6))
+                    .foregroundColor(Theme.textSecondary(for: colorScheme).opacity(0.6))
             }
         }
     }
@@ -433,15 +618,20 @@ struct MessageStatisticsView: View {
 @available(macOS 26.0, *)
 struct LoadingIndicator: View {
     @State private var dots = ""
+    let colorScheme: ColorScheme
+    
+    init(colorScheme: ColorScheme = .dark) {
+        self.colorScheme = colorScheme
+    }
     
     var body: some View {
         HStack(spacing: 8) {
             ProgressView()
                 .scaleEffect(0.7)
-                .tint(Theme.textSecondary)
+                .tint(Theme.textSecondary(for: colorScheme))
             Text("Thinking\(dots)")
                 .font(Theme.captionFont)
-                .foregroundColor(Theme.textSecondary)
+                .foregroundColor(Theme.textSecondary(for: colorScheme))
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
@@ -458,6 +648,7 @@ struct LoadingIndicator: View {
 
 @available(macOS 26.0, *)
 struct EmptyConversationView: View {
+    let colorScheme: ColorScheme
     let onNewChat: () -> Void
     
     var body: some View {
@@ -466,22 +657,22 @@ struct EmptyConversationView: View {
             
             Image(systemName: "bubble.left.and.bubble.right")
                 .font(.system(size: 48, weight: .thin))
-                .foregroundColor(Theme.textSecondary.opacity(0.5))
+                .foregroundColor(Theme.textSecondary(for: colorScheme).opacity(0.5))
             
             VStack(spacing: 8) {
                 Text("Start a conversation")
                     .font(.system(size: 20, weight: .medium, design: .default))
-                    .foregroundColor(Theme.textPrimary)
+                    .foregroundColor(Theme.textPrimary(for: colorScheme))
                 
                 Text("Type a message below to begin")
                     .font(Theme.captionFont)
-                    .foregroundColor(Theme.textSecondary)
+                    .foregroundColor(Theme.textSecondary(for: colorScheme))
             }
             
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.background)
+        .background(Theme.background(for: colorScheme))
     }
 }
 
@@ -494,6 +685,7 @@ struct InputArea: View {
     var isInputFocused: FocusState<Bool>.Binding
     let isLoading: Bool
     let fontSize: Double
+    let colorScheme: ColorScheme
     let onSend: () -> Void
     let conversationId: UUID?
     
@@ -506,7 +698,7 @@ struct InputArea: View {
     var body: some View {
         VStack(spacing: 0) {
             Rectangle()
-                .fill(Theme.border)
+                .fill(Theme.border(for: colorScheme))
                 .frame(height: 1)
             
             VStack(spacing: 8) {
@@ -520,7 +712,8 @@ struct InputArea: View {
                                     showRemoveButton: true,
                                     onRemove: {
                                         pendingAttachments.removeAll { $0.id == attachment.id }
-                                    }
+                                    },
+                                    colorScheme: colorScheme
                                 )
                             }
                         }
@@ -535,6 +728,7 @@ struct InputArea: View {
                             text: $messageText,
                             fontSize: fontSize,
                             placeholder: "Message",
+                            colorScheme: colorScheme,
                             onEnter: {
                                 if canSend {
                                     onSend()
@@ -548,17 +742,17 @@ struct InputArea: View {
                         if messageText.isEmpty {
                             Text("Message")
                                 .font(Theme.messageFont(size: fontSize))
-                                .foregroundColor(Theme.textSecondary)
+                                .foregroundColor(Theme.textSecondary(for: colorScheme))
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 12)
                                 .allowsHitTesting(false)
                         }
                     }
-                    .background(Theme.surface)
+                    .background(Theme.surface(for: colorScheme))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(isDragOver ? Theme.accent : Theme.border, lineWidth: isDragOver ? 2 : 1)
+                            .stroke(isDragOver ? Theme.accent(for: colorScheme) : Theme.border(for: colorScheme), lineWidth: isDragOver ? 2 : 1)
                     )
                     .contentShape(Rectangle()) // Make entire area droppable
                     .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
@@ -568,9 +762,9 @@ struct InputArea: View {
                     Button(action: onSend) {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(canSend ? Theme.textPrimary : Theme.textSecondary)
+                            .foregroundColor(canSend ? .white : Theme.textSecondary(for: colorScheme))
                             .frame(width: 32, height: 32)
-                            .background(canSend ? Theme.accent : Theme.surface)
+                            .background(canSend ? Theme.accent(for: colorScheme) : Theme.surface(for: colorScheme))
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -578,7 +772,7 @@ struct InputArea: View {
                     .keyboardShortcut(.return, modifiers: .command)
                 }
                 .padding(16)
-                .background(Theme.background)
+                .background(Theme.background(for: colorScheme))
             }
         }
         .alert("Error", isPresented: $showError) {
@@ -662,6 +856,7 @@ struct TextEditorWithEnterHandler: NSViewRepresentable {
     @Binding var text: String
     let fontSize: Double
     let placeholder: String
+    let colorScheme: ColorScheme
     let onEnter: () -> Void
     
     // Calculate row height based on font size
@@ -685,7 +880,9 @@ struct TextEditorWithEnterHandler: NSViewRepresentable {
         let textView = NSTextView()
         
         textView.font = NSFont.systemFont(ofSize: fontSize)
-        textView.textColor = NSColor.labelColor
+        // Set text color based on theme - use Theme.textPrimary for proper contrast
+        let themeColor = Theme.textPrimary(for: colorScheme)
+        textView.textColor = NSColor(themeColor)
         textView.backgroundColor = .clear
         textView.isEditable = true
         textView.isSelectable = true
@@ -747,6 +944,10 @@ struct TextEditorWithEnterHandler: NSViewRepresentable {
         if textView.string != text {
             textView.string = text
         }
+        
+        // Update text color based on theme
+        let themeColor = Theme.textPrimary(for: colorScheme)
+        textView.textColor = NSColor(themeColor)
         
         // Update height based on content
         Task { @MainActor in

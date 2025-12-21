@@ -104,6 +104,21 @@ public class ConversationService {
         }
     }
     
+    /// Save orchestration state for a message
+    /// - Parameters:
+    ///   - state: The orchestration state
+    ///   - messageId: The message ID
+    public func saveOrchestrationState(_ state: OrchestrationState, for messageId: UUID) throws {
+        try dbManager.saveOrchestrationState(state, for: messageId)
+    }
+    
+    /// Load orchestration states for a conversation
+    /// - Parameter conversationId: The conversation ID
+    /// - Returns: Dictionary mapping message ID to orchestration state
+    public func loadOrchestrationStates(for conversationId: UUID) throws -> [UUID: OrchestrationState] {
+        return try dbManager.loadOrchestrationStates(for: conversationId)
+    }
+    
     /// Search conversations by title
     /// - Parameter query: Search query
     /// - Returns: Matching conversations

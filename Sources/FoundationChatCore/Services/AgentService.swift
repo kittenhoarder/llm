@@ -90,12 +90,14 @@ public actor AgentService {
     ///   - conversationId: Conversation ID
     ///   - conversation: The conversation
     ///   - tokenBudget: Optional token budget constraint
+    ///   - progressTracker: Optional progress tracker for visualization
     /// - Returns: Agent result
     public func processMessage(
         _ message: String,
         conversationId: UUID,
         conversation: Conversation,
-        tokenBudget: Int? = nil
+        tokenBudget: Int? = nil,
+        progressTracker: OrchestrationProgressTracker? = nil
     ) async throws -> AgentResult {
         print("🤖 AgentService.processMessage() called with message: \(message.prefix(50))...")
         
@@ -128,7 +130,8 @@ public actor AgentService {
         let result = try await orchestrator.execute(
             task: task,
             context: context,
-            agentIds: config.selectedAgents.isEmpty ? nil : config.selectedAgents
+            agentIds: config.selectedAgents.isEmpty ? nil : config.selectedAgents,
+            progressTracker: progressTracker
         )
         print("✅ Orchestrator.execute() completed")
         
@@ -406,10 +409,35 @@ public actor AgentService {
         conversation: Conversation,
         fileReferences: [String] = []
     ) -> AgentContext {
+        // #region debug log
+        Task {
+            await DebugLogger.shared.log(
+                location: "AgentService.swift:buildAgentContext",
+                message: "buildAgentContext called",
+                hypothesisId: "B",
+                data: ["conversationId": conversationId.uuidString, "hasFileReferences": !fileReferences.isEmpty]
+            )
+        }
+        // #endregion
+        
         var context = conversationContexts[conversationId] ?? AgentContext()
         context.conversationHistory = conversation.messages
         context.fileReferences = collectFileReferences(from: conversation, additionalFiles: fileReferences)
         context.metadata["conversationId"] = conversationId.uuidString
+        
+        // #region debug log
+        let ragChunksCount = context.ragChunks.count
+        let fileReferencesCount = context.fileReferences.count
+        Task { @Sendable in
+            await DebugLogger.shared.log(
+                location: "AgentService.swift:buildAgentContext",
+                message: "buildAgentContext returning",
+                hypothesisId: "B",
+                data: ["ragChunksCount": ragChunksCount, "fileReferencesCount": fileReferencesCount]
+            )
+        }
+        // #endregion
+        
         return context
     }
     

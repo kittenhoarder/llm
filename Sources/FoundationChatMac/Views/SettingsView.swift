@@ -11,6 +11,7 @@ import FoundationChatCore
 @available(macOS 26.0, *)
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var systemColorScheme
     @AppStorage("fontSizeAdjustment") private var fontSizeAdjustment: Double = 14
     @AppStorage("preferredColorScheme") private var preferredColorScheme: String = "dark"
     @AppStorage("useContextualConversations") private var useContextualConversations: Bool = true
@@ -33,41 +34,50 @@ struct SettingsView: View {
         let isCoordinator: Bool
     }
     
+    private var effectiveColorScheme: ColorScheme {
+        switch preferredColorScheme {
+        case "light": return .light
+        case "dark": return .dark
+        case "system": return systemColorScheme
+        default: return .dark
+        }
+    }
+    
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
                 Text("Settings")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
+                    .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                 
                 Spacer()
                 
                 Button(action: { dismiss() }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 18))
-                        .foregroundColor(Theme.textSecondary)
+                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.escape, modifiers: [])
             }
             .padding(20)
-            .background(Theme.surface)
+            .background(Theme.surface(for: effectiveColorScheme))
             
             Divider()
-                .background(Theme.border)
+                .background(Theme.border(for: effectiveColorScheme))
             
             // Settings content
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     // Appearance section
-                    SettingsSection(title: "Appearance") {
+                    SettingsSection(title: "Appearance", colorScheme: effectiveColorScheme) {
                         VStack(alignment: .leading, spacing: 16) {
                             // Theme picker
                             HStack {
                                 Text("Theme")
                                     .font(Theme.titleFont)
-                                    .foregroundColor(Theme.textPrimary)
+                                    .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                                 
                                 Spacer()
                                 
@@ -84,7 +94,7 @@ struct SettingsView: View {
                             HStack {
                                 Text("Font Size")
                                     .font(Theme.titleFont)
-                                    .foregroundColor(Theme.textPrimary)
+                                    .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                                 
                                 Spacer()
                                 
@@ -93,21 +103,21 @@ struct SettingsView: View {
                                         Image(systemName: "minus")
                                             .font(.system(size: 12, weight: .medium))
                                             .frame(width: 24, height: 24)
-                                            .background(Theme.surfaceElevated)
+                                            .background(Theme.surfaceElevated(for: effectiveColorScheme))
                                             .clipShape(Circle())
                                     }
                                     .buttonStyle(.plain)
                                     
                                     Text("\(Int(fontSizeAdjustment))pt")
                                         .font(Theme.captionFont)
-                                        .foregroundColor(Theme.textSecondary)
+                                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                         .frame(width: 50)
                                     
                                     Button(action: { fontSizeAdjustment = min(24, fontSizeAdjustment + 2) }) {
                                         Image(systemName: "plus")
                                             .font(.system(size: 12, weight: .medium))
                                             .frame(width: 24, height: 24)
-                                            .background(Theme.surfaceElevated)
+                                            .background(Theme.surfaceElevated(for: effectiveColorScheme))
                                             .clipShape(Circle())
                                     }
                                     .buttonStyle(.plain)
@@ -117,7 +127,7 @@ struct SettingsView: View {
                     }
                     
                     // Agents & Tools section
-                    SettingsSection(title: "Agents & Tools") {
+                    SettingsSection(title: "Agents & Tools", colorScheme: effectiveColorScheme) {
                         VStack(alignment: .leading, spacing: 16) {
                             Toggle(isOn: Binding(
                                 get: { useCoordinator },
@@ -130,40 +140,40 @@ struct SettingsView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Use Coordinator")
                                         .font(Theme.titleFont)
-                                        .foregroundColor(Theme.textPrimary)
+                                        .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                                     Text(useCoordinator 
                                         ? "Coordinator-based orchestration (experimental)" 
                                         : "Direct single-agent conversations (recommended)")
                                         .font(Theme.captionFont)
-                                        .foregroundColor(Theme.textSecondary)
+                                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                 }
                             }
                             
                             // Smart Delegation toggle (only shown when coordinator is enabled)
                             if useCoordinator {
                                 Divider()
-                                    .background(Theme.border)
+                                    .background(Theme.border(for: effectiveColorScheme))
                                 
                                 Toggle(isOn: $smartDelegation) {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text("Smart Delegation")
                                             .font(Theme.titleFont)
-                                            .foregroundColor(Theme.textPrimary)
+                                            .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                                         Text(smartDelegation 
                                             ? "Coordinator decides when to delegate vs. respond directly (recommended)" 
                                             : "Always delegate tasks to specialized agents")
                                             .font(Theme.captionFont)
-                                            .foregroundColor(Theme.textSecondary)
+                                            .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                     }
                                 }
                             }
                             
                             Divider()
-                                .background(Theme.border)
+                                .background(Theme.border(for: effectiveColorScheme))
                             
                             Text("Available Agents")
                                 .font(Theme.titleFont)
-                                .foregroundColor(Theme.textPrimary)
+                                .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                             
                             ForEach(availableAgents) { agent in
                                 Toggle(isOn: Binding(
@@ -179,7 +189,7 @@ struct SettingsView: View {
                                             .font(.headline)
                                         Text(agent.description)
                                             .font(.caption)
-                                            .foregroundColor(Theme.textSecondary)
+                                            .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                     }
                                 }
                             }
@@ -195,7 +205,7 @@ struct SettingsView: View {
                                 } else if enabledCount > 1 {
                                     Text("ℹ️ Single-agent mode: Only the first selected agent will be used")
                                         .font(.caption)
-                                        .foregroundColor(Theme.textSecondary)
+                                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                         .padding(.top, 4)
                                 }
                             }
@@ -203,69 +213,69 @@ struct SettingsView: View {
                             if useCoordinator {
                                 Text("Note: Coordinator is automatically included when orchestrator mode is enabled.")
                                     .font(.caption)
-                                    .foregroundColor(Theme.textSecondary)
+                                    .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                     .padding(.top, 4)
                             }
                         }
                     }
                     
                     // Conversation section
-                    SettingsSection(title: "Conversation") {
+                    SettingsSection(title: "Conversation", colorScheme: effectiveColorScheme) {
                         VStack(alignment: .leading, spacing: 16) {
                             Toggle(isOn: $useContextualConversations) {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Contextual Conversations")
                                         .font(Theme.titleFont)
-                                        .foregroundColor(Theme.textPrimary)
+                                        .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                                     Text("Send conversation history to the model for better context-aware responses")
                                         .font(Theme.captionFont)
-                                        .foregroundColor(Theme.textSecondary)
+                                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                 }
                             }
                         }
                     }
                     
                     // RAG (Retrieval-Augmented Generation) section
-                    SettingsSection(title: "RAG Settings") {
+                    SettingsSection(title: "RAG Settings", colorScheme: effectiveColorScheme) {
                         VStack(alignment: .leading, spacing: 16) {
                             // Enable RAG toggle
                             Toggle(isOn: $useRAG) {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Enable RAG")
                                         .font(Theme.titleFont)
-                                        .foregroundColor(Theme.textPrimary)
+                                        .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                                     Text("Use semantic search to retrieve only relevant file chunks instead of sending entire files to the LLM. Dramatically improves token efficiency.")
                                         .font(Theme.captionFont)
-                                        .foregroundColor(Theme.textSecondary)
+                                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                 }
                             }
                             .toggleStyle(.switch)
                             
                             if useRAG {
                                 Divider()
-                                    .background(Theme.border)
+                                    .background(Theme.border(for: effectiveColorScheme))
                                 
                                 // Chunk size
                                 VStack(alignment: .leading, spacing: 8) {
                                     HStack {
                                         Text("Chunk Size")
                                             .font(Theme.titleFont)
-                                            .foregroundColor(Theme.textPrimary)
+                                            .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                                         Spacer()
                                         Text("\(ragChunkSize) characters")
                                             .font(Theme.captionFont)
-                                            .foregroundColor(Theme.textSecondary)
+                                            .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                     }
                                     
                                     Slider(value: Binding(
                                         get: { Double(ragChunkSize) },
                                         set: { ragChunkSize = Int($0) }
                                     ), in: 500...2000, step: 100)
-                                    .tint(Theme.accent)
+                                    .tint(Theme.accent(for: effectiveColorScheme))
                                     
                                     Text("Size of text chunks for indexing. Larger chunks provide more context but may be less precise.")
                                         .font(Theme.captionFont)
-                                        .foregroundColor(Theme.textSecondary)
+                                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                 }
                                 
                                 // Top-K
@@ -273,39 +283,39 @@ struct SettingsView: View {
                                     HStack {
                                         Text("Chunks to Retrieve")
                                             .font(Theme.titleFont)
-                                            .foregroundColor(Theme.textPrimary)
+                                            .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                                         Spacer()
                                         Text("\(ragTopK) chunks")
                                             .font(Theme.captionFont)
-                                            .foregroundColor(Theme.textSecondary)
+                                            .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                     }
                                     
                                     Stepper(value: $ragTopK, in: 1...20) {
                                         Text("\(ragTopK)")
                                             .font(Theme.captionFont)
-                                            .foregroundColor(Theme.textSecondary)
+                                            .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                     }
                                     
                                     Text("Number of most relevant chunks to retrieve per query. More chunks provide more context but use more tokens.")
                                         .font(Theme.captionFont)
-                                        .foregroundColor(Theme.textSecondary)
+                                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                 }
                             }
                         }
                     }
                     
                     // API Keys section
-                    SettingsSection(title: "API Keys") {
+                    SettingsSection(title: "API Keys", colorScheme: effectiveColorScheme) {
                         VStack(alignment: .leading, spacing: 16) {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("SerpAPI Key")
                                     .font(Theme.titleFont)
-                                    .foregroundColor(Theme.textPrimary)
+                                    .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                                 
                                 SecureField("Enter your SerpAPI key", text: $serpapiApiKey)
                                     .textFieldStyle(.plain)
                                     .padding(8)
-                                    .background(Theme.surfaceElevated)
+                                    .background(Theme.surfaceElevated(for: effectiveColorScheme))
                                     .clipShape(RoundedRectangle(cornerRadius: 4))
                                 
                                 HStack(spacing: 4) {
@@ -327,14 +337,14 @@ struct SettingsView: View {
                                 
                                 Text("Get your free API key at [serpapi.com](https://serpapi.com)")
                                     .font(Theme.captionFont)
-                                    .foregroundColor(Theme.textSecondary)
-                                    .tint(Theme.textSecondary)
+                                    .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
+                                    .tint(Theme.textSecondary(for: effectiveColorScheme))
                             }
                         }
                     }
                     
                     // Data section
-                    SettingsSection(title: "Data") {
+                    SettingsSection(title: "Data", colorScheme: effectiveColorScheme) {
                         VStack(alignment: .leading, spacing: 12) {
                             Button(action: { showClearDataConfirmation = true }) {
                                 HStack {
@@ -349,28 +359,28 @@ struct SettingsView: View {
                             
                             Text("This will permanently delete all conversations and messages.")
                                 .font(Theme.captionFont)
-                                .foregroundColor(Theme.textSecondary)
+                                .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                         }
                     }
                     
                     // About section
-                    SettingsSection(title: "About") {
+                    SettingsSection(title: "About", colorScheme: effectiveColorScheme) {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 Text("Version")
-                                    .foregroundColor(Theme.textSecondary)
+                                    .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                 Spacer()
                                 Text("1.0.0")
-                                    .foregroundColor(Theme.textPrimary)
+                                    .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                             }
                             .font(Theme.captionFont)
                             
                             HStack {
                                 Text("Built with")
-                                    .foregroundColor(Theme.textSecondary)
+                                    .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                                 Spacer()
                                 Text("SwiftUI + FoundationModels")
-                                    .foregroundColor(Theme.textPrimary)
+                                    .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
                             }
                             .font(Theme.captionFont)
                         }
@@ -380,7 +390,7 @@ struct SettingsView: View {
             }
         }
         .frame(width: 420, height: 500)
-        .background(Theme.background)
+        .background(Theme.background(for: effectiveColorScheme))
         .alert("Clear All Data?", isPresented: $showClearDataConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Clear All", role: .destructive) {
@@ -495,18 +505,19 @@ struct SettingsView: View {
 @available(macOS 26.0, *)
 struct SettingsSection<Content: View>: View {
     let title: String
+    let colorScheme: ColorScheme
     @ViewBuilder let content: Content
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title.uppercased())
                 .font(.system(size: 11, weight: .semibold, design: .default))
-                .foregroundColor(Theme.textSecondary)
+                .foregroundColor(Theme.textSecondary(for: colorScheme))
                 .tracking(1)
             
             content
                 .padding(16)
-                .background(Theme.surface)
+                .background(Theme.surface(for: colorScheme))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }

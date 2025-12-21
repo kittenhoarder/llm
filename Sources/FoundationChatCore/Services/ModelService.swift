@@ -44,20 +44,17 @@ public actor ModelService {
     /// The underlying language model
     private let model: SystemLanguageModel
     
-    /// Current session with tools
-    private var session: LanguageModelSession?
-    
     /// Tool call tracker
     private let tracker = ToolCallTracker()
-    
-    /// Current session ID for tracking
-    private var currentSessionId: String?
     
     /// Available tools (for fallback inference)
     private var tools: [any Tool] = []
     
     /// Sessions per conversation ID (for contextual conversations)
     private var conversationSessions: [UUID: LanguageModelSession] = [:]
+    
+    /// Session IDs per conversation (for tracking tool calls in contextual conversations)
+    private var conversationSessionIds: [UUID: String] = [:]
     
     /// Context optimizer for managing token limits
     private let contextOptimizer = ContextOptimizer()
@@ -90,49 +87,12 @@ public actor ModelService {
     
     /// Update the tools available to the model
     /// - Parameter tools: Array of tools to make available
+    /// Note: Tools are stored and will be used when creating request-scoped sessions.
+    /// Session creation happens at request time, not during tool configuration.
     public func updateTools(_ tools: [any Tool]) {
-        // Store tools for fallback inference
+        // Store tools for use in request-scoped sessions
         self.tools = tools
-        
-        // Generate a new session ID for tracking
-        let sessionId = UUID().uuidString
-        self.currentSessionId = sessionId
-        
-        print("[DEBUG ModelService] updateTools called with \(tools.count) tools, sessionId: \(sessionId)")
-        
-        // Wrap tools with tracking
-        // Since we can't easily type-erase Tool with associated types,
-        // we'll wrap known tool types specifically
-        var trackedTools: [any Tool] = []
-        for tool in tools {
-            // For DuckDuckGoFoundationTool specifically
-            if let ddgTool = tool as? DuckDuckGoFoundationTool {
-                print("[DEBUG ModelService] Wrapping DuckDuckGoFoundationTool with tracking")
-                let tracked = TrackedTool(wrapping: ddgTool, sessionId: sessionId, tracker: tracker)
-                trackedTools.append(tracked)
-                print("[DEBUG ModelService] Successfully wrapped tool: \(tracked.name)")
-            } else if let webSearchTool = tool as? WebSearchFoundationTool {
-                // Track web search tool
-                print("[DEBUG ModelService] Wrapping WebSearchFoundationTool with tracking")
-                let tracked = TrackedTool(wrapping: webSearchTool, sessionId: sessionId, tracker: tracker)
-                trackedTools.append(tracked)
-                print("[DEBUG ModelService] Successfully wrapped tool: \(tracked.name)")
-            } else if let serpapiTool = tool as? SerpAPIFoundationTool {
-                // Track SerpAPI tool
-                print("[DEBUG ModelService] Wrapping SerpAPIFoundationTool with tracking")
-                let tracked = TrackedTool(wrapping: serpapiTool, sessionId: sessionId, tracker: tracker)
-                trackedTools.append(tracked)
-                print("[DEBUG ModelService] Successfully wrapped tool: \(tracked.name)")
-            } else {
-                // For other tools, add them as-is (they won't be tracked)
-                // TODO: Add tracking for other tool types as needed
-                print("[DEBUG ModelService] Tool '\(tool.name)' not wrapped (unknown type)")
-                trackedTools.append(tool)
-            }
-        }
-        
-        print("[DEBUG ModelService] Created LanguageModelSession with \(trackedTools.count) tools")
-        self.session = LanguageModelSession(tools: trackedTools)
+        print("[DEBUG ModelService] updateTools called with \(tools.count) tools")
     }
     
     /// Send a message with image attachments and get a response
@@ -143,21 +103,16 @@ public actor ModelService {
     /// - Throws: Error if model is unavailable or request fails
     /// Note: This method handles images by including them in the prompt.
     /// The exact API for image segments may need adjustment based on FoundationModels implementation.
+    /// This method creates a request-scoped session for each call to support parallel execution.
     public func respond(to message: String, withImages imagePaths: [String]) async throws -> ModelResponse {
-        guard let session = session, let sessionId = currentSessionId else {
-            print("[DEBUG ModelService] No session or sessionId, using default session")
-            let defaultSession = LanguageModelSession(tools: [])
-            // For images, include image references in the message
-            let imageRefs = imagePaths.map { "[Image: \($0)]" }.joined(separator: "\n")
-            let fullMessage = "\(message)\n\n\(imageRefs)"
-            let response = try await defaultSession.respond(to: fullMessage)
-            return ModelResponse(content: response.content)
-        }
+        // Create a request-scoped session for this request
+        let requestSessionId = UUID().uuidString
+        let requestSession = createRequestSession(sessionId: requestSessionId)
         
-        print("[DEBUG ModelService] respond(withImages:) called with \(imagePaths.count) images, sessionId: \(sessionId)")
+        print("[DEBUG ModelService] respond(withImages:) called with \(imagePaths.count) images, sessionId: \(requestSessionId)")
         
         // Clear previous tool calls for this session before making the request
-        await tracker.clearSession(sessionId)
+        await tracker.clearSession(requestSessionId)
         
         // For now, include image references in the text message
         // TODO: Update to use proper Transcript.ImageSegment when API is confirmed
@@ -165,11 +120,11 @@ public actor ModelService {
         let fullMessage = "\(message)\n\nAttached images:\n\(imageRefs)"
         
         print("[DEBUG ModelService] Calling session.respond() with image references...")
-        let response = try await session.respond(to: fullMessage)
+        let response = try await requestSession.respond(to: fullMessage)
         print("[DEBUG ModelService] session.respond() completed")
         
-        // Extract tool calls from tracker
-        var toolNames = await tracker.getUniqueToolNames(for: sessionId)
+        // Extract tool calls from tracker using the session ID
+        var toolNames = await tracker.getUniqueToolNames(for: requestSessionId)
         
         // Fallback: If no tools were tracked but we have tools available, try to infer from content
         if toolNames.isEmpty {
@@ -191,26 +146,51 @@ public actor ModelService {
     /// - Parameter message: The user's message
     /// - Returns: The model's response
     /// - Throws: Error if model is unavailable or request fails
+    /// Note: This method creates a request-scoped session for each call to support parallel execution.
     public func respond(to message: String) async throws -> ModelResponse {
-        guard let session = session, let sessionId = currentSessionId else {
-            print("[DEBUG ModelService] No session or sessionId, using default session")
-            let defaultSession = LanguageModelSession(tools: [])
-            let response = try await defaultSession.respond(to: message)
-            return ModelResponse(content: response.content)
-        }
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "ModelService.swift:respond",
+            message: "respond() called - entering",
+            hypothesisId: "F",
+            data: ["hasTools": !tools.isEmpty, "toolCount": tools.count]
+        )
+        // #endregion
         
-        print("[DEBUG ModelService] respond() called with sessionId: \(sessionId)")
+        // Create a request-scoped session for this request
+        // This ensures thread safety when multiple requests run in parallel
+        let requestSessionId = UUID().uuidString
+        let requestSession = createRequestSession(sessionId: requestSessionId)
+        
+        print("[DEBUG ModelService] Created request-scoped session (sessionId: \(requestSessionId))")
         
         // Clear previous tool calls for this session before making the request
-        await tracker.clearSession(sessionId)
-        print("[DEBUG ModelService] Cleared previous tool calls for session")
+        await tracker.clearSession(requestSessionId)
+        
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "ModelService.swift:respond",
+            message: "About to call session.respond()",
+            hypothesisId: "F",
+            data: ["sessionId": requestSessionId]
+        )
+        // #endregion
         
         print("[DEBUG ModelService] Calling session.respond()...")
-        let response = try await session.respond(to: message)
+        let response = try await requestSession.respond(to: message)
         print("[DEBUG ModelService] session.respond() completed")
         
-        // Extract tool calls from tracker
-        var toolNames = await tracker.getUniqueToolNames(for: sessionId)
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "ModelService.swift:respond",
+            message: "session.respond() completed successfully",
+            hypothesisId: "F",
+            data: ["sessionId": requestSessionId]
+        )
+        // #endregion
+        
+        // Extract tool calls from tracker using the session ID
+        var toolNames = await tracker.getUniqueToolNames(for: requestSessionId)
         print("[DEBUG ModelService] Extracted \(toolNames.count) tool names from tracker: \(toolNames)")
         
         // Fallback: If no tools were tracked but we have tools available, try to infer from content
@@ -240,6 +220,7 @@ public actor ModelService {
     ///   - useContextual: Whether to use contextual conversations (reuse session)
     /// - Returns: The model's response
     /// - Throws: Error if model is unavailable or request fails
+    /// Note: This method manages conversation-scoped sessions for contextual conversations.
     public func respond(
         to message: String,
         conversationId: UUID,
@@ -251,12 +232,16 @@ public actor ModelService {
         
         if useContextual {
             // Use or create session for this conversation
-            if let existingSession = conversationSessions[conversationId] {
+            if let existingSession = conversationSessions[conversationId],
+               let existingSessionId = conversationSessionIds[conversationId] {
                 session = existingSession
-                sessionId = currentSessionId ?? UUID().uuidString
+                sessionId = existingSessionId
                 print("[DEBUG ModelService] Reusing session for conversation \(conversationId)")
             } else {
                 // Create new session from transcript if we have previous messages
+                sessionId = UUID().uuidString
+                conversationSessionIds[conversationId] = sessionId
+                
                 if !previousMessages.isEmpty {
                     // Optimize context before creating transcript
                     let optimized = try await contextOptimizer.optimizeContext(
@@ -268,28 +253,22 @@ public actor ModelService {
                     print("[DEBUG ModelService] Context optimized: \(optimized.messagesTruncated) messages truncated, \(optimized.tokenUsage.totalTokens) tokens used")
                     
                     let transcript = createTranscript(from: optimized.messages)
-                    let trackedTools = createTrackedTools()
+                    let trackedTools = createTrackedTools(for: sessionId)
                     session = LanguageModelSession(tools: trackedTools, transcript: transcript)
-                    sessionId = UUID().uuidString
-                    currentSessionId = sessionId
                     conversationSessions[conversationId] = session
                     print("[DEBUG ModelService] Created new session from transcript for conversation \(conversationId)")
                 } else {
                     // No previous messages, create fresh session
-                    let trackedTools = createTrackedTools()
+                    let trackedTools = createTrackedTools(for: sessionId)
                     session = LanguageModelSession(tools: trackedTools)
-                    sessionId = UUID().uuidString
-                    currentSessionId = sessionId
                     conversationSessions[conversationId] = session
                     print("[DEBUG ModelService] Created new session for conversation \(conversationId)")
                 }
             }
         } else {
-            // Non-contextual: create new session each time
-            let trackedTools = createTrackedTools()
-            session = LanguageModelSession(tools: trackedTools)
+            // Non-contextual: create new session each time (request-scoped)
             sessionId = UUID().uuidString
-            currentSessionId = sessionId
+            session = createRequestSession(sessionId: sessionId)
             print("[DEBUG ModelService] Created new session (non-contextual mode)")
         }
         
@@ -327,16 +306,24 @@ public actor ModelService {
     /// - Parameter conversationId: The conversation ID
     public func clearSession(for conversationId: UUID) {
         conversationSessions.removeValue(forKey: conversationId)
+        conversationSessionIds.removeValue(forKey: conversationId)
         print("[DEBUG ModelService] Cleared session for conversation \(conversationId)")
     }
     
     // MARK: - Private Helpers
     
-    private func createTrackedTools() -> [any Tool] {
-        guard let sessionId = currentSessionId else {
-            return tools
-        }
-        
+    /// Create a request-scoped session with tracked tools
+    /// - Parameter sessionId: Session ID for tool tracking
+    /// - Returns: A new LanguageModelSession configured with tracked tools
+    private func createRequestSession(sessionId: String) -> LanguageModelSession {
+        let trackedTools = createTrackedTools(for: sessionId)
+        return LanguageModelSession(tools: trackedTools)
+    }
+    
+    /// Create tracked tools for a given session ID
+    /// - Parameter sessionId: Session ID for tool tracking
+    /// - Returns: Array of tools with tracking wrappers where applicable
+    private func createTrackedTools(for sessionId: String) -> [any Tool] {
         var trackedTools: [any Tool] = []
         for tool in tools {
             if let ddgTool = tool as? DuckDuckGoFoundationTool {
@@ -347,6 +334,10 @@ public actor ModelService {
                 let tracked = TrackedTool(wrapping: webSearchTool, sessionId: sessionId, tracker: tracker)
                 trackedTools.append(tracked)
                 print("[DEBUG ModelService] Wrapping WebSearchFoundationTool with tracking")
+            } else if let serpapiTool = tool as? SerpAPIFoundationTool {
+                // Track SerpAPI tool
+                let tracked = TrackedTool(wrapping: serpapiTool, sessionId: sessionId, tracker: tracker)
+                trackedTools.append(tracked)
             } else {
                 trackedTools.append(tool)
             }

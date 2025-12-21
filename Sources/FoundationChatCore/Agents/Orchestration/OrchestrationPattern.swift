@@ -15,11 +15,13 @@ public protocol OrchestrationPattern: Sendable {
     ///   - task: The task to execute
     ///   - agents: Available agents to use
     ///   - context: Shared context
+    ///   - progressTracker: Optional progress tracker for visualization
     /// - Returns: Result of execution
     func execute(
         task: AgentTask,
         agents: [any Agent],
-        context: AgentContext
+        context: AgentContext,
+        progressTracker: OrchestrationProgressTracker?
     ) async throws -> AgentResult
 }
 
