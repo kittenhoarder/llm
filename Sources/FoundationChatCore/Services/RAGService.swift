@@ -25,7 +25,7 @@ public actor RAGService {
     
     /// Get chunk size from UserDefaults or use default
     private var chunkSize: Int {
-        let value = UserDefaults.standard.integer(forKey: "ragChunkSize")
+        let value = UserDefaults.standard.integer(forKey: UserDefaultsKey.ragChunkSize)
         return value > 0 ? value : TextChunker.defaultChunkSize
     }
     
@@ -36,7 +36,7 @@ public actor RAGService {
     
     /// Get topK from UserDefaults or use default
     private var topK: Int {
-        let value = UserDefaults.standard.integer(forKey: "ragTopK")
+        let value = UserDefaults.standard.integer(forKey: UserDefaultsKey.ragTopK)
         return value > 0 ? value : 5
     }
     

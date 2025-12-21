@@ -53,9 +53,9 @@ public actor MessageCompactor {
         let recentTokens = await tokenCounter.countTokens(recentMessages)
         
         // Calculate available tokens for summary
-        let availableForSummary = maxTokens - recentTokens - 50 // Reserve 50 for summary overhead
+        let availableForSummary = maxTokens - recentTokens - AppConstants.tokenReserveOverhead
         
-        guard availableForSummary > 100 else {
+        guard availableForSummary > AppConstants.minimumTokensForSummary else {
             // Not enough space for summary, just keep recent messages
             return recentMessages
         }
@@ -139,9 +139,9 @@ public actor MessageCompactor {
         
         // Calculate available tokens
         let recentTokens = await tokenCounter.countTokens(recentMessages)
-        let availableForOld = maxTokens - recentTokens - 50
+        let availableForOld = maxTokens - recentTokens - AppConstants.tokenReserveOverhead
         
-        guard availableForOld > 100 else {
+        guard availableForOld > AppConstants.minimumTokensForSummary else {
             return recentMessages
         }
         

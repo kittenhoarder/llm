@@ -24,6 +24,9 @@ public enum AgentCapability: String, Codable, Sendable, Hashable {
     
     /// General reasoning and task coordination
     case generalReasoning
+    
+    /// Can analyze images using vision models
+    case imageAnalysis
 }
 
 

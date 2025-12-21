@@ -22,15 +22,15 @@ import UniformTypeIdentifiers
 /// - TODO: Improve PDF text extraction support
 @available(macOS 26.0, iOS 26.0, *)
 public class FileReaderAgent: BaseAgent, @unchecked Sendable {
-    /// Maximum file size to read (10MB)
-    private let maxFileSize: Int64 = 10 * 1024 * 1024
+    /// Maximum file size to read
+    private let maxFileSize: Int64 = AppConstants.maxFileSizeBytes
     
     /// Cache of file contents
     private var fileCache: [String: String] = [:]
     
     public init() {
         super.init(
-            name: "File Reader",
+            name: AgentName.fileReader,
             description: "Reads and processes files from the file system. Supports text files, markdown, Swift code, JSON, CSV, and basic PDF reading.",
             capabilities: [.fileReading],
             tools: []
@@ -47,6 +47,19 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
                 content: "No file path specified. Please provide a file path in the task parameters or context.",
                 success: false,
                 error: "Missing file path"
+            )
+        }
+        
+        // Check if file is an image - if so, return early and suggest using VisionAgent
+        let fileURL = URL(fileURLWithPath: filePath)
+        if let contentType = try? fileURL.resourceValues(forKeys: [.contentTypeKey]).contentType,
+           contentType.conforms(to: .image) {
+            return AgentResult(
+                agentId: id,
+                taskId: task.id,
+                content: "This is an image file. Please use the Vision Agent to analyze images. The Vision Agent can describe images, identify objects, read text in images, and answer questions about visual content.",
+                success: false,
+                error: "Image files should be processed by VisionAgent"
             )
         }
         
@@ -257,6 +270,12 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
                 throw FileReaderError.unsupportedEncoding
             }
             return text
+        }
+        
+        // Image files - delegate to VisionAgent
+        if type.conforms(to: .image) {
+            // Return placeholder - VisionAgent will handle actual analysis
+            return "[Image file - Use VisionAgent to analyze this image. File size: \(data.count) bytes]"
         }
         
         // PDF - basic text extraction (limited)

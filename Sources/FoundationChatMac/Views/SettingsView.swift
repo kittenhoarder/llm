@@ -19,6 +19,7 @@ struct SettingsView: View {
     // Legacy support: also check old enabledAgentIds key for migration
     @AppStorage("enabledAgentIds") private var enabledAgentIdsJSON: String = ""
     @AppStorage("useCoordinator") private var useCoordinator: Bool = true
+    @AppStorage("smartDelegation") private var smartDelegation: Bool = true
     @AppStorage("useRAG") private var useRAG: Bool = true
     @AppStorage("ragChunkSize") private var ragChunkSize: Int = 1000
     @AppStorage("ragTopK") private var ragTopK: Int = 5
@@ -135,6 +136,25 @@ struct SettingsView: View {
                                         : "Direct single-agent conversations (recommended)")
                                         .font(Theme.captionFont)
                                         .foregroundColor(Theme.textSecondary)
+                                }
+                            }
+                            
+                            // Smart Delegation toggle (only shown when coordinator is enabled)
+                            if useCoordinator {
+                                Divider()
+                                    .background(Theme.border)
+                                
+                                Toggle(isOn: $smartDelegation) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("Smart Delegation")
+                                            .font(Theme.titleFont)
+                                            .foregroundColor(Theme.textPrimary)
+                                        Text(smartDelegation 
+                                            ? "Coordinator decides when to delegate vs. respond directly (recommended)" 
+                                            : "Always delegate tasks to specialized agents")
+                                            .font(Theme.captionFont)
+                                            .foregroundColor(Theme.textSecondary)
+                                    }
                                 }
                             }
                             

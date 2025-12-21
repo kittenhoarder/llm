@@ -8,21 +8,6 @@
 import Foundation
 import FoundationModels
 
-/// Helper function to append log entry to debug.log file
-private func appendToDebugLog(_ jsonString: String) {
-    let logPath = "/Users/owenperry/dev/llm/.cursor/debug.log"
-    if let fileHandle = FileHandle(forWritingAtPath: logPath) {
-        fileHandle.seekToEndOfFile()
-        if let data = (jsonString + "\n").data(using: .utf8) {
-            fileHandle.write(data)
-        }
-        fileHandle.closeFile()
-    } else {
-        // File doesn't exist, create it
-        try? (jsonString + "\n").write(toFile: logPath, atomically: false, encoding: .utf8)
-    }
-}
-
 /// Base protocol that all agents must conform to
 @available(macOS 26.0, iOS 26.0, *)
 public protocol Agent: Sendable {
@@ -76,25 +61,17 @@ public class BaseAgent: Agent, @unchecked Sendable {
                 if !tools.isEmpty {
                     print("🤖 BaseAgent '\(agentName)' updating tools...")
                     
-                    // #region debug log
-                    let logDataTools: [String: Any] = [
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "A",
-                        "location": "BaseAgent.swift:modelService",
-                        "message": "Updating ModelService with tools",
-                        "data": [
+                    // Debug logging
+                    await DebugLogger.shared.log(
+                        location: "BaseAgent.swift:modelService",
+                        message: "Updating ModelService with tools",
+                        hypothesisId: "A",
+                        data: [
                             "agentName": agentName,
                             "toolsCount": tools.count,
                             "toolNames": tools.map { $0.name }
-                        ],
-                        "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
-                    ]
-                    if let jsonData = try? JSONSerialization.data(withJSONObject: logDataTools),
-                       let jsonString = String(data: jsonData, encoding: .utf8) {
-                        appendToDebugLog(jsonString)
-                    }
-                    // #endregion
+                        ]
+                    )
                     
                     await _modelService!.updateTools(tools)
                     print("✅ BaseAgent '\(agentName)' tools updated")
@@ -195,7 +172,7 @@ public class BaseAgent: Agent, @unchecked Sendable {
         if !optimizedMessages.isEmpty {
             prompt += "Conversation History:\n"
             // Use optimized messages (already compacted)
-            for message in optimizedMessages.suffix(10) { // Use more messages since they're optimized
+            for message in optimizedMessages.suffix(AppConstants.optimizedMessagesCount) {
                 prompt += "\(message.role.rawValue.capitalized): \(message.content)\n"
             }
             prompt += "\n"

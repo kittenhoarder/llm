@@ -20,6 +20,9 @@ final class MultiAgentScenarioTests: XCTestCase {
         agentService = AgentService()
         conversationService = try ConversationService()
         
+        // Ensure all agents are initialized before tests run
+        try await TestHelpers.ensureAgentsInitialized(agentService: agentService)
+        
         // Create test outputs directory with absolute path
         let fileManager = FileManager.default
         let currentDir = fileManager.currentDirectoryPath
@@ -30,7 +33,7 @@ final class MultiAgentScenarioTests: XCTestCase {
     
     override func tearDown() async throws {
         if let conversationId = conversationId {
-            try? conversationService.deleteConversation(id: conversationId)
+            try? await conversationService.deleteConversation(id: conversationId)
         }
         try await super.tearDown()
     }
@@ -41,9 +44,9 @@ final class MultiAgentScenarioTests: XCTestCase {
     /// Task: Search for best practices and analyze code
     func testResearchAndCodeAnalysisScenario() async throws {
         let agents = await agentService.getAvailableAgents()
-        guard let webSearch = agents.first(where: { $0.name == "Web Search" }),
-              let codeAnalysis = agents.first(where: { $0.name == "Code Analysis" }),
-              let coordinator = agents.first(where: { $0.name == "Coordinator" }) else {
+        guard let webSearch = agents.first(where: { $0.name == AgentName.webSearch }),
+              let codeAnalysis = agents.first(where: { $0.name == AgentName.codeAnalysis }),
+              let coordinator = agents.first(where: { $0.name == AgentName.coordinator }) else {
             XCTFail("Required agents not found")
             return
         }
@@ -145,7 +148,7 @@ final class MultiAgentScenarioTests: XCTestCase {
         // Generate report
         let report = TestOutputFormatter.createReport(
             scenarioName: "Research + Code Analysis",
-            agents: ["Web Search", "Code Analysis", "Coordinator"],
+            agents: [AgentName.webSearch, AgentName.codeAnalysis, AgentName.coordinator],
             results: allResults,
             conversation: finalConv,
             verificationResults: verificationResults
@@ -166,9 +169,9 @@ final class MultiAgentScenarioTests: XCTestCase {
     /// Task: Read file and calculate statistics
     func testDataProcessingPipelineScenario() async throws {
         let agents = await agentService.getAvailableAgents()
-        guard let fileReader = agents.first(where: { $0.name == "File Reader" }),
-              let dataAnalysis = agents.first(where: { $0.name == "Data Analysis" }),
-              let coordinator = agents.first(where: { $0.name == "Coordinator" }) else {
+        guard let fileReader = agents.first(where: { $0.name == AgentName.fileReader }),
+              let dataAnalysis = agents.first(where: { $0.name == AgentName.dataAnalysis }),
+              let coordinator = agents.first(where: { $0.name == AgentName.coordinator }) else {
             XCTFail("Required agents not found")
             return
         }
@@ -262,7 +265,7 @@ final class MultiAgentScenarioTests: XCTestCase {
         // Generate report
         let report = TestOutputFormatter.createReport(
             scenarioName: "Data Processing Pipeline",
-            agents: ["File Reader", "Data Analysis", "Coordinator"],
+            agents: [AgentName.fileReader, AgentName.dataAnalysis, AgentName.coordinator],
             results: allResults,
             conversation: finalConv,
             verificationResults: verificationResults
@@ -280,10 +283,10 @@ final class MultiAgentScenarioTests: XCTestCase {
     /// Task: Review code, search for patterns, provide recommendations
     func testComprehensiveCodeReviewScenario() async throws {
         let agents = await agentService.getAvailableAgents()
-        guard let fileReader = agents.first(where: { $0.name == "File Reader" }),
-              let codeAnalysis = agents.first(where: { $0.name == "Code Analysis" }),
-              let webSearch = agents.first(where: { $0.name == "Web Search" }),
-              let coordinator = agents.first(where: { $0.name == "Coordinator" }) else {
+        guard let fileReader = agents.first(where: { $0.name == AgentName.fileReader }),
+              let codeAnalysis = agents.first(where: { $0.name == AgentName.codeAnalysis }),
+              let webSearch = agents.first(where: { $0.name == AgentName.webSearch }),
+              let coordinator = agents.first(where: { $0.name == AgentName.coordinator }) else {
             XCTFail("Required agents not found")
             return
         }
@@ -358,7 +361,7 @@ final class MultiAgentScenarioTests: XCTestCase {
         // Generate report
         let report = TestOutputFormatter.createReport(
             scenarioName: "Comprehensive Code Review",
-            agents: ["File Reader", "Code Analysis", "Web Search", "Coordinator"],
+            agents: [AgentName.fileReader, AgentName.codeAnalysis, AgentName.webSearch, AgentName.coordinator],
             results: [result],
             conversation: finalConv,
             verificationResults: verificationResults
@@ -376,9 +379,9 @@ final class MultiAgentScenarioTests: XCTestCase {
     /// Task: Search for trends and analyze data
     func testInformationSynthesisScenario() async throws {
         let agents = await agentService.getAvailableAgents()
-        guard let webSearch = agents.first(where: { $0.name == "Web Search" }),
-              let dataAnalysis = agents.first(where: { $0.name == "Data Analysis" }),
-              let coordinator = agents.first(where: { $0.name == "Coordinator" }) else {
+        guard let webSearch = agents.first(where: { $0.name == AgentName.webSearch }),
+              let dataAnalysis = agents.first(where: { $0.name == AgentName.dataAnalysis }),
+              let coordinator = agents.first(where: { $0.name == AgentName.coordinator }) else {
             XCTFail("Required agents not found")
             return
         }
@@ -438,7 +441,7 @@ final class MultiAgentScenarioTests: XCTestCase {
         // Generate report
         let report = TestOutputFormatter.createReport(
             scenarioName: "Information Synthesis",
-            agents: ["Web Search", "Data Analysis", "Coordinator"],
+            agents: [AgentName.webSearch, AgentName.dataAnalysis, AgentName.coordinator],
             results: [result],
             conversation: finalConv,
             verificationResults: verificationResults
@@ -456,8 +459,8 @@ final class MultiAgentScenarioTests: XCTestCase {
     /// Task: Multi-step research with context maintenance
     func testMultiStepResearchScenario() async throws {
         let agents = await agentService.getAvailableAgents()
-        guard let webSearch = agents.first(where: { $0.name == "Web Search" }),
-              let coordinator = agents.first(where: { $0.name == "Coordinator" }) else {
+        guard let webSearch = agents.first(where: { $0.name == AgentName.webSearch }),
+              let coordinator = agents.first(where: { $0.name == AgentName.coordinator }) else {
             XCTFail("Required agents not found")
             return
         }
@@ -549,7 +552,7 @@ final class MultiAgentScenarioTests: XCTestCase {
         // Generate report
         let report = TestOutputFormatter.createReport(
             scenarioName: "Multi-Step Research",
-            agents: ["Web Search", "Coordinator"],
+            agents: [AgentName.webSearch, AgentName.coordinator],
             results: allResults,
             conversation: finalConv,
             verificationResults: verificationResults

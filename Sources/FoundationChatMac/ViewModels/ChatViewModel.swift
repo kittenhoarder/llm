@@ -133,27 +133,19 @@ public class ChatViewModel: ObservableObject {
             // Load enabled agents from settings (user-selectable agents only)
             var enabledAgentIds = await loadEnabledAgentIds()
             
-            // #region debug log
-            let logDataInit: [String: Any] = [
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "C",
-                "location": "ChatViewModel.swift:createNewConversation",
-                "message": "Starting conversation creation",
-                "data": [
+            // Debug logging
+            await DebugLogger.shared.log(
+                location: "ChatViewModel.swift:createNewConversation",
+                message: "Starting conversation creation",
+                hypothesisId: "C",
+                data: [
                     "loadedAgentIds": enabledAgentIds.map { $0.uuidString },
                     "loadedCount": enabledAgentIds.count
-                ],
-                "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
-            ]
-            if let jsonData = try? JSONSerialization.data(withJSONObject: logDataInit),
-               let jsonString = String(data: jsonData, encoding: .utf8) {
-                try? (jsonString + "\n").write(toFile: "/Users/owenperry/dev/llm/.cursor/debug.log", atomically: false, encoding: .utf8)
-            }
-            // #endregion
+                ]
+            )
             
             // Get useCoordinator setting
-            let useCoordinator = UserDefaults.standard.object(forKey: "useCoordinator") as? Bool ?? false
+            let useCoordinator = UserDefaults.standard.object(forKey: UserDefaultsKey.useCoordinator) as? Bool ?? false
             
             // Validation based on mode
             if useCoordinator {
@@ -161,17 +153,17 @@ public class ChatViewModel: ObservableObject {
                 if enabledAgentIds.isEmpty {
                     // Default to all user-selectable agents
                     let agents = await agentService.getAvailableAgents()
-                    let userSelectableAgents = agents.filter { $0.name != "Coordinator" }
+                    let userSelectableAgents = agents.filter { $0.name != AgentName.coordinator }
                     enabledAgentIds = userSelectableAgents.map { $0.id }
                     // Store agent names, not IDs, so they persist across app restarts
                     let allNames = userSelectableAgents.map { $0.name }
                     UserDefaults.standard.set(allNames.joined(separator: ","), forKey: "enabledAgentNames")
-                    UserDefaults.standard.removeObject(forKey: "enabledAgentIds")
+                    UserDefaults.standard.removeObject(forKey: UserDefaultsKey.enabledAgentIds)
                 }
                 
                 // Automatically include Coordinator agent
                 let allAgents = await agentService.getAvailableAgents()
-                if let coordinator = allAgents.first(where: { $0.name == "Coordinator" }) {
+                if let coordinator = allAgents.first(where: { $0.name == AgentName.coordinator }) {
                     if !enabledAgentIds.contains(coordinator.id) {
                         enabledAgentIds.append(coordinator.id)
                     }
@@ -181,54 +173,38 @@ public class ChatViewModel: ObservableObject {
                 if enabledAgentIds.isEmpty {
                     // Default to first available agent
                     let agents = await agentService.getAvailableAgents()
-                    let userSelectableAgents = agents.filter { $0.name != "Coordinator" }
+                    let userSelectableAgents = agents.filter { $0.name != AgentName.coordinator }
                     
-                    // #region debug log
-                    let logDataAgents: [String: Any] = [
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "C",
-                        "location": "ChatViewModel.swift:createNewConversation",
-                        "message": "Getting available agents for default selection",
-                        "data": [
+                    // Debug logging
+                    await DebugLogger.shared.log(
+                        location: "ChatViewModel.swift:createNewConversation",
+                        message: "Getting available agents for default selection",
+                        hypothesisId: "C",
+                        data: [
                             "allAgents": agents.map { ["id": $0.id.uuidString, "name": $0.name] },
                             "userSelectableAgents": userSelectableAgents.map { ["id": $0.id.uuidString, "name": $0.name] },
                             "firstAgentId": userSelectableAgents.first?.id.uuidString ?? "nil",
                             "firstAgentName": userSelectableAgents.first?.name ?? "nil"
-                        ],
-                        "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
-                    ]
-                    if let jsonData = try? JSONSerialization.data(withJSONObject: logDataAgents),
-                       let jsonString = String(data: jsonData, encoding: .utf8) {
-                        try? (jsonString + "\n").write(toFile: "/Users/owenperry/dev/llm/.cursor/debug.log", atomically: false, encoding: .utf8)
-                    }
-                    // #endregion
+                        ]
+                    )
                     
                     if let firstAgent = userSelectableAgents.first {
                         enabledAgentIds = [firstAgent.id]
                         // Store agent name, not ID, so it persists across app restarts
                         UserDefaults.standard.set(firstAgent.name, forKey: "enabledAgentNames")
-                        UserDefaults.standard.removeObject(forKey: "enabledAgentIds")
+                        UserDefaults.standard.removeObject(forKey: UserDefaultsKey.enabledAgentIds)
                         
-                        // #region debug log
-                        let logDataSelected: [String: Any] = [
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "C",
-                            "location": "ChatViewModel.swift:createNewConversation",
-                            "message": "Selected default agent and saved to UserDefaults",
-                            "data": [
+                        // Debug logging
+                        await DebugLogger.shared.log(
+                            location: "ChatViewModel.swift:createNewConversation",
+                            message: "Selected default agent and saved to UserDefaults",
+                            hypothesisId: "C",
+                            data: [
                                 "selectedAgentId": firstAgent.id.uuidString,
                                 "selectedAgentName": firstAgent.name,
                                 "savedToUserDefaults": firstAgent.id.uuidString
-                            ],
-                            "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
-                        ]
-                        if let jsonData = try? JSONSerialization.data(withJSONObject: logDataSelected),
-                           let jsonString = String(data: jsonData, encoding: .utf8) {
-                            try? (jsonString + "\n").write(toFile: "/Users/owenperry/dev/llm/.cursor/debug.log", atomically: false, encoding: .utf8)
-                        }
-                        // #endregion
+                            ]
+                        )
                     } else {
                         throw NSError(domain: "ChatViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "No agents available"])
                     }
@@ -238,26 +214,18 @@ public class ChatViewModel: ObservableObject {
                 }
             }
             
-            // #region debug log
-            let logData: [String: Any] = [
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "A",
-                "location": "ChatViewModel.swift:createNewConversation",
-                "message": "Creating conversation with agent configuration",
-                "data": [
+            // Debug logging
+            await DebugLogger.shared.log(
+                location: "ChatViewModel.swift:createNewConversation",
+                message: "Creating conversation with agent configuration",
+                hypothesisId: "A",
+                data: [
                     "conversationId": conversation.id.uuidString,
                     "enabledAgentIds": enabledAgentIds.map { $0.uuidString },
                     "useCoordinator": useCoordinator,
                     "agentCount": enabledAgentIds.count
-                ],
-                "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
-            ]
-            if let jsonData = try? JSONSerialization.data(withJSONObject: logData),
-               let jsonString = String(data: jsonData, encoding: .utf8) {
-                try? (jsonString + "\n").write(toFile: "/Users/owenperry/dev/llm/.cursor/debug.log", atomically: false, encoding: .utf8)
-            }
-            // #endregion
+                ]
+            )
             
             // Create agent configuration from settings
             let config = AgentConfiguration(
@@ -289,7 +257,7 @@ public class ChatViewModel: ObservableObject {
         }
         
         // Legacy: Try to load agent IDs (for migration)
-        if let idsString = UserDefaults.standard.string(forKey: "enabledAgentIds"),
+        if let idsString = UserDefaults.standard.string(forKey: UserDefaultsKey.enabledAgentIds),
            !idsString.isEmpty {
             let idStrings = idsString.split(separator: ",").map { String($0) }
             let loadedIds = idStrings.compactMap { UUID(uuidString: $0) }
@@ -303,7 +271,7 @@ public class ChatViewModel: ObservableObject {
             // If some IDs are invalid, migrate to names
             if validIds.count < loadedIds.count {
                 let validAgents = currentAgents.filter { validIds.contains($0.id) }
-                let names = validAgents.filter { $0.name != "Coordinator" }.map { $0.name }
+                let names = validAgents.filter { $0.name != AgentName.coordinator }.map { $0.name }
                 UserDefaults.standard.set(names.joined(separator: ","), forKey: "enabledAgentNames")
                 UserDefaults.standard.removeObject(forKey: "enabledAgentIds")
                 return await resolveAgentNamesToIds(agentNames: names)
@@ -319,7 +287,7 @@ public class ChatViewModel: ObservableObject {
     /// Resolve agent names to current agent IDs
     private func resolveAgentNamesToIds(agentNames: [String]) async -> [UUID] {
         let allAgents = await agentService.getAvailableAgents()
-        let userSelectableAgents = allAgents.filter { $0.name != "Coordinator" }
+        let userSelectableAgents = allAgents.filter { $0.name != AgentName.coordinator }
         
         var resolvedIds: [UUID] = []
         for name in agentNames {
@@ -484,7 +452,7 @@ public class ChatViewModel: ObservableObject {
             let response: ModelResponse
             if isAgentConversation, let conv = conversation, let config = conv.agentConfiguration {
                 // Check useCoordinator setting to determine routing
-                let useCoordinator = UserDefaults.standard.object(forKey: "useCoordinator") as? Bool ?? false
+                let useCoordinator = UserDefaults.standard.object(forKey: UserDefaultsKey.useCoordinator) as? Bool ?? false
                 
                 if useCoordinator && config.orchestrationPattern == .orchestrator {
                     // Orchestrator mode: Use AgentService with orchestrator pattern
@@ -498,28 +466,20 @@ public class ChatViewModel: ObservableObject {
                     // Single-agent mode: Use direct agent processing (no orchestrator)
                     print("🤖 Using single-agent mode for message processing...")
                     
-                    // #region debug log
-                    let logDataRouting: [String: Any] = [
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "A",
-                        "location": "ChatViewModel.swift:sendMessageToConversation",
-                        "message": "Routing to single-agent processing",
-                        "data": [
+                    // Debug logging
+                    await DebugLogger.shared.log(
+                        location: "ChatViewModel.swift:sendMessageToConversation",
+                        message: "Routing to single-agent processing",
+                        hypothesisId: "A",
+                        data: [
                             "conversationId": conversationId.uuidString,
                             "singleAgentId": singleAgentId.uuidString,
                             "configSelectedAgents": config.selectedAgents.map { $0.uuidString },
                             "configSelectedCount": config.selectedAgents.count,
                             "useCoordinator": useCoordinator,
                             "orchestrationPattern": config.orchestrationPattern.rawValue
-                        ],
-                        "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
-                    ]
-                    if let jsonData = try? JSONSerialization.data(withJSONObject: logDataRouting),
-                       let jsonString = String(data: jsonData, encoding: .utf8) {
-                        try? (jsonString + "\n").write(toFile: "/Users/owenperry/dev/llm/.cursor/debug.log", atomically: false, encoding: .utf8)
-                    }
-                    // #endregion
+                        ]
+                    )
                     
                     let service = agentService
                     print("🤖 AgentService obtained, calling processSingleAgentMessage()...")
