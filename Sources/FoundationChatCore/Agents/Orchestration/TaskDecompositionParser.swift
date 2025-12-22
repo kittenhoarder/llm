@@ -148,8 +148,8 @@ public actor TaskDecompositionParser {
                 }
                 
                 if !description.isEmpty {
-                    // Parse subtask without dependencies first (will add them in second pass)
-                    if let subtask = parseSubtaskText(description, availableAgents: availableAgents) {
+                    // Parse subtask using full section text (not just description) so we can extract agent name and capabilities
+                    if let subtask = parseSubtaskText(description, fullSectionText: sectionText, availableAgents: availableAgents) {
                         subtaskNumberToID[subtaskNumber] = subtask.id
                         parsedSubtasks.append((subtaskNumber, subtask))
                     } else {
@@ -339,7 +339,7 @@ public actor TaskDecompositionParser {
     }
     
     /// Parse a single subtask text into a DecomposedSubtask
-    private func parseSubtaskText(_ text: String, availableAgents: [any Agent]) -> DecomposedSubtask? {
+    private func parseSubtaskText(_ text: String, fullSectionText: String? = nil, availableAgents: [any Agent]) -> DecomposedSubtask? {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
         
@@ -356,11 +356,15 @@ public actor TaskDecompositionParser {
             return nil
         }
         
-        // Extract agent name mentions
-        let agentName = extractAgentName(from: trimmed, availableAgents: availableAgents)
+        // Use full section text for agent/capability extraction if available (contains metadata)
+        // Otherwise fall back to just the description text
+        let textForExtraction = fullSectionText ?? trimmed
         
-        // Extract capabilities
-        let capabilities = extractCapabilities(from: trimmed)
+        // Extract agent name mentions from full section (includes "Agent to Handle:" lines)
+        let agentName = extractAgentName(from: textForExtraction, availableAgents: availableAgents)
+        
+        // Extract capabilities from full section (includes "Capabilities Needed:" lines)
+        let capabilities = extractCapabilities(from: textForExtraction)
         
         // Dependencies will be extracted in second pass, so return empty for now
         let dependencies: [UUID] = []
@@ -552,7 +556,34 @@ public actor TaskDecompositionParser {
     private func extractAgentName(from text: String, availableAgents: [any Agent]) -> String? {
         let lowercased = text.lowercased()
         
-        // Try to match agent names
+        // First, try to find explicit "Agent to Handle:" or "Agent:" patterns
+        let agentPatterns = [
+            #"\*\*Agent to Handle\*\*:\s*([^\n]+)"#,
+            #"\*\*Agent\*\*:\s*([^\n]+)"#,
+            #"Agent to Handle:\s*([^\n]+)"#,
+            #"Agent:\s*([^\n]+)"#
+        ]
+        
+        for pattern in agentPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+               match.numberOfRanges >= 2,
+               let agentRange = Range(match.range(at: 1), in: text) {
+                let agentText = String(text[agentRange]).trimmingCharacters(in: .whitespaces)
+                
+                // Try to match the extracted agent text to available agents
+                for agent in availableAgents {
+                    let agentNameLower = agent.name.lowercased()
+                    let agentTextLower = agentText.lowercased()
+                    
+                    if agentTextLower.contains(agentNameLower) || agentNameLower.contains(agentTextLower) {
+                        return agent.name
+                    }
+                }
+            }
+        }
+        
+        // Fallback: Try to match agent names anywhere in text
         for agent in availableAgents {
             let agentNameLower = agent.name.lowercased()
             if lowercased.contains(agentNameLower) {
@@ -580,9 +611,47 @@ public actor TaskDecompositionParser {
     
     /// Extract required capabilities from text
     private func extractCapabilities(from text: String) -> Set<AgentCapability> {
-        let lowercased = text.lowercased()
         var capabilities: Set<AgentCapability> = []
+        let lowercased = text.lowercased()
         
+        // First, try to find explicit "Capabilities Needed:" pattern
+        let capabilityPatterns = [
+            #"\*\*Capabilities Needed\*\*:\s*([^\n]+)"#,
+            #"Capabilities Needed:\s*([^\n]+)"#
+        ]
+        
+        for pattern in capabilityPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+               match.numberOfRanges >= 2,
+               let capRange = Range(match.range(at: 1), in: text) {
+                let capText = String(text[capRange]).trimmingCharacters(in: .whitespaces).lowercased()
+                
+                // Map capability text to AgentCapability
+                if capText.contains("web") || capText.contains("search") {
+                    capabilities.insert(.webSearch)
+                }
+                if capText.contains("file") || capText.contains("read") || capText.contains("reading") {
+                    capabilities.insert(.fileReading)
+                }
+                if capText.contains("code") || capText.contains("programming") {
+                    capabilities.insert(.codeAnalysis)
+                }
+                if capText.contains("data") || capText.contains("calculate") || capText.contains("statistics") {
+                    capabilities.insert(.dataAnalysis)
+                }
+                if capText.contains("reason") || capText.contains("coordinate") || capText.contains("general") {
+                    capabilities.insert(.generalReasoning)
+                }
+                
+                // If we found explicit capabilities, return early (don't fall back to keyword matching)
+                if !capabilities.isEmpty {
+                    return capabilities
+                }
+            }
+        }
+        
+        // Fallback: Keyword-based extraction
         if lowercased.contains("search") || lowercased.contains("web") || lowercased.contains("look up") {
             capabilities.insert(.webSearch)
         }

@@ -45,8 +45,33 @@ public actor AgentOrchestrator {
         let agents: [any Agent]
         
         if let ids = agentIds {
+            // #region debug log
+            await DebugLogger.shared.log(
+                location: "AgentOrchestrator.swift:execute",
+                message: "Getting agents by IDs",
+                hypothesisId: "A,D",
+                data: [
+                    "requestedAgentIds": ids.map { $0.uuidString },
+                    "requestedCount": ids.count
+                ]
+            )
+            // #endregion
             // Use specified agents
             agents = try await getAgents(byIds: ids)
+            // #region debug log
+            let retrievedNames = agents.map { $0.name }
+            let retrievedIds = agents.map { $0.id.uuidString }
+            await DebugLogger.shared.log(
+                location: "AgentOrchestrator.swift:execute",
+                message: "Retrieved agents by IDs",
+                hypothesisId: "A,D",
+                data: [
+                    "retrievedCount": agents.count,
+                    "retrievedNames": retrievedNames,
+                    "retrievedIds": retrievedIds
+                ]
+            )
+            // #endregion
         } else {
             // Select agents based on task requirements
             agents = try await selectAgents(for: task)

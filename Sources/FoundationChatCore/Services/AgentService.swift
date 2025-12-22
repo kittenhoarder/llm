@@ -126,6 +126,19 @@ public actor AgentService {
         }
         print("🤖 Agent configuration found: \(config.selectedAgents.count) agents selected")
         
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "AgentService.swift:processMessage",
+            message: "About to call orchestrator.execute()",
+            hypothesisId: "A,D",
+            data: [
+                "selectedAgentCount": config.selectedAgents.count,
+                "selectedAgentIds": config.selectedAgents.map { $0.uuidString },
+                "willPassAgentIds": config.selectedAgents.isEmpty ? "nil" : "array"
+            ]
+        )
+        // #endregion
+        
         // Execute task
         print("🤖 Calling orchestrator.execute()...")
         let result = try await orchestrator.execute(
@@ -459,6 +472,82 @@ public actor AgentService {
         } else {
             // Use full conversation history
             context.conversationHistory = conversation.messages
+        }
+        
+        // Retrieve RAG chunks if we have file references and a current message
+        if !context.fileReferences.isEmpty, let query = currentMessage {
+            do {
+                let ragService = RAGService.shared
+                let topK = UserDefaults.standard.integer(forKey: "ragTopK") > 0 
+                    ? UserDefaults.standard.integer(forKey: "ragTopK") 
+                    : 5
+                
+                // Enhance query for better semantic search - include section numbers if mentioned
+                var enhancedQuery = query
+                // Look for section references like "1.4.4", "section 1.4.4", etc.
+                if let sectionMatch = query.range(of: #"\d+\.\d+\.\d+"#, options: .regularExpression) {
+                    let sectionNumber = String(query[sectionMatch])
+                    enhancedQuery = "section \(sectionNumber) \(query)"
+                }
+                
+                // #region debug log
+                await DebugLogger.shared.log(
+                    location: "AgentService.swift:buildAgentContext",
+                    message: "Attempting RAG retrieval",
+                    hypothesisId: "B",
+                    data: [
+                        "originalQuery": String(query.prefix(100)),
+                        "enhancedQuery": String(enhancedQuery.prefix(100)),
+                        "fileReferencesCount": context.fileReferences.count,
+                        "topK": topK,
+                        "conversationId": conversationId.uuidString
+                    ]
+                )
+                // #endregion
+                
+                let chunks = try await ragService.searchRelevantChunks(
+                    query: enhancedQuery,
+                    fileIds: nil,
+                    conversationId: conversationId,
+                    topK: topK
+                )
+                
+                context.ragChunks = chunks
+                
+                // #region debug log
+                await DebugLogger.shared.log(
+                    location: "AgentService.swift:buildAgentContext",
+                    message: "RAG retrieval completed",
+                    hypothesisId: "B",
+                    data: [
+                        "chunksRetrieved": chunks.count,
+                        "chunkPreviews": chunks.prefix(3).map { String($0.content.prefix(100)) }
+                    ]
+                )
+                // #endregion
+            } catch {
+                // #region debug log
+                await DebugLogger.shared.log(
+                    location: "AgentService.swift:buildAgentContext",
+                    message: "RAG retrieval failed",
+                    hypothesisId: "B",
+                    data: ["error": error.localizedDescription]
+                )
+                // #endregion
+                print("⚠️ AgentService: RAG retrieval failed: \(error.localizedDescription)")
+            }
+        } else {
+            // #region debug log
+            await DebugLogger.shared.log(
+                location: "AgentService.swift:buildAgentContext",
+                message: "Skipping RAG retrieval",
+                hypothesisId: "B",
+                data: [
+                    "hasFileReferences": !context.fileReferences.isEmpty,
+                    "hasCurrentMessage": currentMessage != nil
+                ]
+            )
+            // #endregion
         }
         
         // #region debug log

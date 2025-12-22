@@ -101,7 +101,7 @@ The coordinator is a `BaseAgent` with `generalReasoning` capability. It has no s
 - Reads text, markdown, Swift, JSON, CSV files
 - 10MB file size limit
 - File content caching
-- Basic PDF support (limited)
+- Full PDF text extraction with PDFKit
 
 **File**: `Sources/FoundationChatCore/Agents/Specialized/FileReaderAgent.swift`
 

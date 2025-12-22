@@ -62,6 +62,32 @@ public actor RAGService {
         print("🔍 RAGService initialized. Storage: \(ragDir.path)")
     }
     
+    /// Check if a file is a PDF based on extension or MIME type
+    /// - Parameters:
+    ///   - attachment: The file attachment
+    ///   - url: The file URL
+    /// - Returns: True if the file is a PDF
+    private func isPDFFile(attachment: FileAttachment, url: URL) -> Bool {
+        // Check by file extension
+        let fileExtension = (attachment.originalName as NSString).pathExtension.lowercased()
+        if fileExtension == "pdf" {
+            return true
+        }
+        
+        // Check by MIME type if available
+        if let mimeType = attachment.mimeType, mimeType.lowercased() == "application/pdf" {
+            return true
+        }
+        
+        // Check by content type
+        if let contentType = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType,
+           contentType.conforms(to: .pdf) {
+            return true
+        }
+        
+        return false
+    }
+    
     /// Index a file for RAG retrieval
     /// - Parameters:
     ///   - attachment: The file attachment to index
@@ -74,11 +100,33 @@ public actor RAGService {
             throw RAGError.fileNotFound(attachment.sandboxPath)
         }
         
-        // Read file content as text
-        guard let fileContent = try? String(contentsOf: fileURL, encoding: .utf8) else {
-            // Try other encodings or skip non-text files
-            print("⚠️ RAGService: Could not read file as UTF-8 text: \(attachment.originalName)")
-            throw RAGError.unsupportedFileType(attachment.originalName)
+        // Detect if file is a PDF
+        let isPDF = isPDFFile(attachment: attachment, url: fileURL)
+        
+        // Extract file content based on type
+        let fileContent: String
+        if isPDF {
+            // Extract text from PDF using PDFTextExtractor
+            do {
+                let pdfContent = try await PDFTextExtractor.extractText(from: fileURL)
+                // Format with metadata for better context
+                fileContent = pdfContent.formatted()
+                print("📄 RAGService: Extracted text from PDF (\(pdfContent.metadata.pageCount) pages): \(attachment.originalName)")
+            } catch PDFExtractionError.passwordProtected {
+                print("⚠️ RAGService: PDF is password-protected, skipping indexing: \(attachment.originalName)")
+                throw RAGError.unsupportedFileType("Password-protected PDF: \(attachment.originalName)")
+            } catch {
+                print("⚠️ RAGService: Failed to extract text from PDF: \(attachment.originalName), error: \(error.localizedDescription)")
+                throw RAGError.unsupportedFileType("PDF extraction failed: \(attachment.originalName)")
+            }
+        } else {
+            // Read file content as text for non-PDF files
+            guard let textContent = try? String(contentsOf: fileURL, encoding: .utf8) else {
+                // Try other encodings or skip non-text files
+                print("⚠️ RAGService: Could not read file as UTF-8 text: \(attachment.originalName)")
+                throw RAGError.unsupportedFileType(attachment.originalName)
+            }
+            fileContent = textContent
         }
         
         // Skip empty files
@@ -239,10 +287,17 @@ public actor RAGService {
         // #endregion
         
         // Convert SearchResult objects to DocumentChunk objects
+        // Filter out message chunks - only return document chunks (those with [file: prefix)
         var chunks: [DocumentChunk] = []
         
         for result in searchResults {
             var resultText = result.text
+            
+            // Skip message chunks - only process document chunks
+            if resultText.hasPrefix("[message:") {
+                continue
+            }
+            
             var fileId = UUID()
             var chunkIndex = 0
             
