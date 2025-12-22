@@ -87,11 +87,56 @@ public class ConversationService {
     /// - Parameters:
     ///   - message: The message to add
     ///   - conversationId: The conversation ID
-    public func addMessage(_ message: Message, to conversationId: UUID) throws {
+    ///   - indexImmediately: If true, wait for indexing to complete (for current message). If false, index asynchronously (for assistant responses)
+    nonisolated public func addMessage(_ message: Message, to conversationId: UUID, indexImmediately: Bool = false) async throws {
         // Load conversation to check if it's ephemeral
         if let conversation = try dbManager.loadConversation(id: conversationId), !conversation.isEphemeral {
             try dbManager.saveMessage(message, conversationId: conversationId)
+            
+            if indexImmediately {
+                // Index synchronously for current user message (needed for immediate context building)
+                do {
+                    try await RAGService.shared.indexMessage(message, conversationId: conversationId)
+                    print("✅ ConversationService: Indexed message \(message.id) immediately")
+                } catch {
+                    // Log error but don't fail message save
+                    print("⚠️ ConversationService: Failed to index message \(message.id) in SVDB: \(error.localizedDescription)")
+                }
+            } else {
+                // Index asynchronously for assistant responses (don't block)
+                Task {
+                    do {
+                        try await RAGService.shared.indexMessage(message, conversationId: conversationId)
+                    } catch {
+                        // Log error but don't fail message save
+                        print("⚠️ ConversationService: Failed to index message \(message.id) in SVDB: \(error.localizedDescription)")
+                    }
+                }
+            }
         }
+    }
+    
+    /// Index existing conversation history in SVDB
+    /// - Parameter conversationId: The conversation ID
+    /// - Throws: RAGError if indexing fails
+    public func indexExistingConversationHistory(_ conversationId: UUID) async throws {
+        guard let conversation = try dbManager.loadConversation(id: conversationId) else {
+            throw NSError(domain: "ConversationService", code: 404, userInfo: [NSLocalizedDescriptionKey: "Conversation not found"])
+        }
+        
+        guard !conversation.isEphemeral else {
+            print("ℹ️ ConversationService: Skipping ephemeral conversation \(conversationId)")
+            return
+        }
+        
+        let messages = conversation.messages
+        guard !messages.isEmpty else {
+            print("ℹ️ ConversationService: No messages to index for conversation \(conversationId)")
+            return
+        }
+        
+        print("📝 ConversationService: Indexing \(messages.count) messages for conversation \(conversationId)")
+        try await RAGService.shared.indexConversationHistory(messages, conversationId: conversationId)
     }
     
     /// Update a message in a conversation

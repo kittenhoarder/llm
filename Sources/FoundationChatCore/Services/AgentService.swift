@@ -101,13 +101,14 @@ public actor AgentService {
     ) async throws -> AgentResult {
         print("🤖 AgentService.processMessage() called with message: \(message.prefix(50))...")
         
-        // Build context for this conversation
-        let context = buildAgentContext(
+        // Build context for this conversation (with SVDB optimization if enabled)
+        let context = await buildAgentContext(
             for: conversationId,
-            conversation: conversation
+            conversation: conversation,
+            currentMessage: message
         )
         
-        print("🤖 Conversation history updated (\(conversation.messages.count) messages)")
+        print("🤖 Conversation history updated (\(context.conversationHistory.count) messages from \(conversation.messages.count) total)")
         print("🤖 File references: \(context.fileReferences.count) files")
         
         // Create task
@@ -191,14 +192,15 @@ public actor AgentService {
         
         print("✅ Agent found: \(resolvedAgent.name)")
         
-        // Build context for this conversation
-        let context = buildAgentContext(
+        // Build context for this conversation (with SVDB optimization if enabled)
+        let context = await buildAgentContext(
             for: conversationId,
             conversation: conversation,
-            fileReferences: fileReferences
+            fileReferences: fileReferences,
+            currentMessage: message
         )
         
-        print("🤖 Conversation history updated (\(conversation.messages.count) messages)")
+        print("🤖 Conversation history updated (\(context.conversationHistory.count) messages from \(conversation.messages.count) total)")
         print("🤖 File references: \(context.fileReferences.count) files")
         
         // Create a simple task for the agent
@@ -407,35 +409,68 @@ public actor AgentService {
     private func buildAgentContext(
         for conversationId: UUID,
         conversation: Conversation,
-        fileReferences: [String] = []
-    ) -> AgentContext {
+        fileReferences: [String] = [],
+        currentMessage: String? = nil
+    ) async -> AgentContext {
         // #region debug log
-        Task {
-            await DebugLogger.shared.log(
-                location: "AgentService.swift:buildAgentContext",
-                message: "buildAgentContext called",
-                hypothesisId: "B",
-                data: ["conversationId": conversationId.uuidString, "hasFileReferences": !fileReferences.isEmpty]
-            )
-        }
+        await DebugLogger.shared.log(
+            location: "AgentService.swift:buildAgentContext",
+            message: "buildAgentContext called",
+            hypothesisId: "B",
+            data: ["conversationId": conversationId.uuidString, "hasFileReferences": !fileReferences.isEmpty, "hasCurrentMessage": currentMessage != nil]
+        )
         // #endregion
         
         var context = conversationContexts[conversationId] ?? AgentContext()
-        context.conversationHistory = conversation.messages
         context.fileReferences = collectFileReferences(from: conversation, additionalFiles: fileReferences)
         context.metadata["conversationId"] = conversationId.uuidString
+        
+        // Check if SVDB optimization is enabled
+        let useSVDB = UserDefaults.standard.object(forKey: UserDefaultsKey.useSVDBForContextOptimization) as? Bool ?? true
+        
+        if useSVDB, let query = currentMessage, !conversation.messages.isEmpty {
+            // Use SVDB-based optimization
+            do {
+                let contextOptimizer = ContextOptimizer()
+                let optimized = try await contextOptimizer.optimizeContextWithSVDB(
+                    messages: conversation.messages,
+                    query: query,
+                    conversationId: conversationId
+                )
+                
+                context.conversationHistory = optimized.messages
+                
+                // Track SVDB savings if available
+                let originalTokens = await TokenCounter().countTokens(conversation.messages)
+                let optimizedTokens = optimized.tokenUsage.messageTokens
+                if originalTokens > optimizedTokens {
+                    // Store savings in metadata for later tracking
+                    context.metadata["tokens_original_context"] = String(originalTokens)
+                    context.metadata["tokens_optimized_context"] = String(optimizedTokens)
+                    context.metadata["tokens_svdb_saved_context"] = String(originalTokens - optimizedTokens)
+                }
+                
+                print("📊 AgentService: SVDB optimization - Original: \(originalTokens) tokens, Optimized: \(optimizedTokens) tokens")
+            } catch {
+                // Fall back to full history if SVDB optimization fails
+                print("⚠️ AgentService: SVDB optimization failed, using full history: \(error.localizedDescription)")
+                context.conversationHistory = conversation.messages
+            }
+        } else {
+            // Use full conversation history
+            context.conversationHistory = conversation.messages
+        }
         
         // #region debug log
         let ragChunksCount = context.ragChunks.count
         let fileReferencesCount = context.fileReferences.count
-        Task { @Sendable in
-            await DebugLogger.shared.log(
-                location: "AgentService.swift:buildAgentContext",
-                message: "buildAgentContext returning",
-                hypothesisId: "B",
-                data: ["ragChunksCount": ragChunksCount, "fileReferencesCount": fileReferencesCount]
-            )
-        }
+        let messageCount = context.conversationHistory.count
+        await DebugLogger.shared.log(
+            location: "AgentService.swift:buildAgentContext",
+            message: "buildAgentContext returning",
+            hypothesisId: "B",
+            data: ["ragChunksCount": ragChunksCount, "fileReferencesCount": fileReferencesCount, "messageCount": messageCount]
+        )
         // #endregion
         
         return context

@@ -6,7 +6,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ICON_DIR="$SCRIPT_DIR/../FoundationChat/FoundationChat/Assets.xcassets/AppIcon.appiconset"
+ICON_DIR="$SCRIPT_DIR/../FoundationChat/Assets.xcassets/AppIcon.appiconset"
 SVG_FILE="$ICON_DIR/icon.svg"
 
 if [ ! -f "$SVG_FILE" ]; then

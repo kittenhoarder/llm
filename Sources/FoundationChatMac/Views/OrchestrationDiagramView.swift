@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AppKit
 import FoundationChatCore
 
 @available(macOS 26.0, *)
@@ -51,51 +52,12 @@ struct OrchestrationDiagramView: View {
                         DelegationDecisionView(shouldDelegate: shouldDelegate, reason: state.delegationReason, colorScheme: colorScheme)
                     }
                     
-                    // Task decomposition tree
-                    // #region debug log
-                    let _ = {
-                        Task {
-                            await DebugLogger.shared.log(
-                                location: "OrchestrationDiagramView.swift:body",
-                                message: "Checking decomposition for tree view",
-                                hypothesisId: "G",
-                                data: [
-                                    "hasDecomposition": state.decomposition != nil,
-                                    "subtaskCount": state.decomposition?.subtasks.count ?? 0,
-                                    "subtaskStatesCount": state.subtaskStates.count,
-                                    "parallelGroupsCount": state.parallelGroups.count
-                                ]
-                            )
-                        }
-                    }()
-                    // #endregion
-                    
-                    if let decomposition = state.decomposition, !decomposition.subtasks.isEmpty {
-                        TaskDecompositionTreeView(
-                            decomposition: decomposition,
-                            subtaskStates: state.subtaskStates,
-                            parallelGroups: state.parallelGroups,
-                            colorScheme: colorScheme
-                        )
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                    } else {
-                        // #region debug log
-                        let _ = {
-                            Task {
-                                await DebugLogger.shared.log(
-                                    location: "OrchestrationDiagramView.swift:body",
-                                    message: "Decomposition tree not shown",
-                                    hypothesisId: "G",
-                                    data: [
-                                        "hasDecomposition": state.decomposition != nil,
-                                        "subtaskCount": state.decomposition?.subtasks.count ?? 0,
-                                        "isEmpty": state.decomposition?.subtasks.isEmpty ?? true
-                                    ]
-                                )
-                            }
-                        }()
-                        // #endregion
-                    }
+                    // Orchestration timeline
+                    OrchestrationTimelineView(
+                        state: state,
+                        colorScheme: colorScheme
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                     
                     // Metrics summary (when complete)
                     if let metrics = state.metrics {
@@ -208,58 +170,307 @@ struct DelegationDecisionView: View {
     }
 }
 
-// MARK: - Task Decomposition Tree
+// MARK: - Orchestration Timeline
 
 @available(macOS 26.0, *)
-struct TaskDecompositionTreeView: View {
-    let decomposition: TaskDecomposition
-    let subtaskStates: [UUID: SubtaskExecutionState]
-    let parallelGroups: [[DecomposedSubtask]]
+struct OrchestrationTimelineView: View {
+    let state: OrchestrationState
     let colorScheme: ColorScheme
+    @State private var startTime: Date?
+    
+    private func copyAllEventsToClipboard() {
+        let sortedEvents = state.eventHistory.sorted { $0.timestamp < $1.timestamp }
+        let start = sortedEvents.first?.timestamp ?? Date()
+        
+        var lines: [String] = []
+        for event in sortedEvents {
+            let timestamp = formatTimestamp(event.timestamp, relativeTo: start)
+            var line = "\(timestamp) | \(event.description)"
+            if let agentName = event.agentName {
+                line += " | Agent: \(agentName)"
+            }
+            lines.append(line)
+        }
+        
+        let text = lines.joined(separator: "\n")
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+    
+    private func formatTimestamp(_ timestamp: Date, relativeTo startTime: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.string(from: timestamp)
+    }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Task Decomposition")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(Theme.textPrimary(for: colorScheme))
-            
-            if !parallelGroups.isEmpty {
-                // Show parallel groups
-                ForEach(Array(parallelGroups.enumerated()), id: \.offset) { groupIndex, group in
-                    VStack(alignment: .leading, spacing: 6) {
-                        if group.count > 1 {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.triangle.2.circlepath")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(Theme.textSecondary(for: colorScheme))
-                                Text("Parallel Group \(groupIndex + 1)")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(Theme.textSecondary(for: colorScheme))
-                            }
-                            .padding(.leading, 8)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Orchestration Timeline")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary(for: colorScheme))
+                
+                Spacer()
+                
+                // Copy all events button
+                if !state.eventHistory.isEmpty {
+                    Button(action: {
+                        copyAllEventsToClipboard()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 9))
+                            Text("Copy Timeline")
+                                .font(.system(size: 9))
                         }
-                        
-                        ForEach(group) { subtask in
-                            SubtaskNodeView(
-                                subtask: subtask,
-                                state: subtaskStates[subtask.id] ?? .pending,
-                                colorScheme: colorScheme
-                            )
-                        }
+                        .foregroundColor(Theme.accent(for: colorScheme))
                     }
-                    .padding(.leading, group.count > 1 ? 12 : 0)
+                    .buttonStyle(.plain)
+                }
+            }
+            
+            if state.eventHistory.isEmpty {
+                // Show current state if no events yet
+                if let decomposition = state.decomposition, !decomposition.subtasks.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(decomposition.subtasks.count) subtasks created")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.textSecondary(for: colorScheme))
+                        Text("Timeline will appear as orchestration progresses")
+                            .font(.system(size: 9))
+                            .foregroundColor(Theme.textSecondary(for: colorScheme).opacity(0.7))
+                    }
+                } else {
+                    Text("Waiting for orchestration to begin...")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.textSecondary(for: colorScheme))
                 }
             } else {
-                // Fallback: show all subtasks sequentially
-                ForEach(decomposition.subtasks) { subtask in
-                    SubtaskNodeView(
-                        subtask: subtask,
-                        state: subtaskStates[subtask.id] ?? .pending,
-                        colorScheme: colorScheme
-                    )
+                // Display timeline - ensure events are sorted by timestamp
+                let sortedEvents = state.eventHistory.sorted { $0.timestamp < $1.timestamp }
+                TimelineContentView(
+                    events: sortedEvents,
+                    currentPhase: state.currentPhase,
+                    subtaskStates: state.subtaskStates,
+                    colorScheme: colorScheme,
+                    startTime: startTime ?? sortedEvents.first?.timestamp ?? Date()
+                )
+                .onAppear {
+                    if startTime == nil {
+                        startTime = sortedEvents.first?.timestamp ?? Date()
+                    }
                 }
             }
         }
+    }
+}
+
+@available(macOS 26.0, *)
+struct TimelineContentView: View {
+    let events: [OrchestrationEvent]
+    let currentPhase: OrchestrationPhase
+    let subtaskStates: [UUID: SubtaskExecutionState]
+    let colorScheme: ColorScheme
+    let startTime: Date
+    
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(events.enumerated()), id: \.offset) { index, event in
+                    HStack(alignment: .top, spacing: 0) {
+                        // Timeline line and node
+                        VStack(spacing: 0) {
+                            // Timeline node
+                            Circle()
+                                .fill(nodeColor(for: event))
+                                .frame(width: 12, height: 12)
+                                .overlay(
+                                    Circle()
+                                        .stroke(Theme.background(for: colorScheme), lineWidth: 2)
+                                )
+                                .shadow(color: nodeColor(for: event).opacity(isEventActive(event) ? 0.5 : 0), radius: isEventActive(event) ? 4 : 0)
+                                .animation(isEventActive(event) ? .easeInOut(duration: 1.0).repeatForever(autoreverses: true) : .default, value: isEventActive(event))
+                            
+                            // Connecting line (except for last event)
+                            if index < events.count - 1 {
+                                Rectangle()
+                                    .fill(Theme.border(for: colorScheme))
+                                    .frame(width: 2, height: 22)
+                                    .padding(.vertical, 2)
+                            }
+                        }
+                        .frame(width: 30)
+                        
+                        // Event content
+                        TimelineEventNode(
+                            event: event,
+                            index: index,
+                            isActive: isEventActive(event),
+                            relativeToStart: startTime,
+                            colorScheme: colorScheme
+                        )
+                        .padding(.leading, 8)
+                        .padding(.bottom, index < events.count - 1 ? 4 : 0)
+                    }
+                }
+            }
+            .padding(.vertical, 8)
+        }
+        .frame(maxHeight: 400)
+    }
+    
+    private func isEventActive(_ event: OrchestrationEvent) -> Bool {
+        switch event.eventType {
+        case .subtaskStarted:
+            if let subtaskId = event.subtaskId,
+               case .inProgress = subtaskStates[subtaskId] {
+                return true
+            }
+            return false
+        case .phaseChange:
+            // Check if this is the current phase
+            if let phase = event.metadata["phase"],
+               phase == currentPhase.rawValue {
+                return true
+            }
+            return false
+        default:
+            return false
+        }
+    }
+    
+    private func nodeColor(for event: OrchestrationEvent) -> Color {
+        switch event.eventType {
+        case .phaseChange:
+            return .blue
+        case .delegationDecision:
+            return .purple
+        case .taskDecomposition:
+            return .orange
+        case .subtaskStarted:
+            return .green
+        case .subtaskCompleted:
+            return .green
+        case .subtaskFailed:
+            return .red
+        case .synthesisStarted, .synthesisCompleted:
+            return .cyan
+        case .orchestrationCompleted:
+            return .green
+        case .orchestrationFailed:
+            return .red
+        }
+    }
+}
+
+@available(macOS 26.0, *)
+struct TimelineEventNode: View {
+    let event: OrchestrationEvent
+    let index: Int
+    let isActive: Bool
+    let relativeToStart: Date
+    let colorScheme: ColorScheme
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            // Timestamp
+            Text(formatTimestamp(event.timestamp, relativeTo: relativeToStart))
+                .font(.system(size: 8, weight: .medium))
+                .foregroundColor(Theme.textSecondary(for: colorScheme))
+                .frame(width: 85, alignment: .leading)
+                .lineLimit(1)
+            
+            // Event content
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: eventIcon)
+                        .font(.system(size: 10))
+                        .foregroundColor(nodeColor)
+                    
+                    Text(eventDescription)
+                        .font(.system(size: 10, weight: isActive ? .semibold : .regular))
+                        .foregroundColor(Theme.textPrimary(for: colorScheme))
+                        .lineLimit(2)
+                }
+                
+                if let agentName = event.agentName {
+                    Text("Agent: \(agentName)")
+                        .font(.system(size: 9))
+                        .foregroundColor(Theme.textSecondary(for: colorScheme))
+                }
+            }
+            
+            Spacer()
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(isActive ? nodeColor.opacity(0.1) : Theme.surfaceElevated(for: colorScheme))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isActive ? nodeColor : Theme.border(for: colorScheme), lineWidth: isActive ? 2 : 1)
+        )
+    }
+    
+    private var nodeColor: Color {
+        switch event.eventType {
+        case .phaseChange:
+            return .blue
+        case .delegationDecision:
+            return .purple
+        case .taskDecomposition:
+            return .orange
+        case .subtaskStarted:
+            return .green
+        case .subtaskCompleted:
+            return .green
+        case .subtaskFailed:
+            return .red
+        case .synthesisStarted, .synthesisCompleted:
+            return .cyan
+        case .orchestrationCompleted:
+            return .green
+        case .orchestrationFailed:
+            return .red
+        }
+    }
+    
+    private var eventIcon: String {
+        switch event.eventType {
+        case .phaseChange:
+            return "arrow.right.circle.fill"
+        case .delegationDecision:
+            return "arrow.triangle.branch"
+        case .taskDecomposition:
+            return "list.bullet.rectangle"
+        case .subtaskStarted:
+            return "play.circle.fill"
+        case .subtaskCompleted:
+            return "checkmark.circle.fill"
+        case .subtaskFailed:
+            return "xmark.circle.fill"
+        case .synthesisStarted:
+            return "arrow.triangle.merge"
+        case .synthesisCompleted:
+            return "checkmark.circle.fill"
+        case .orchestrationCompleted:
+            return "checkmark.circle.fill"
+        case .orchestrationFailed:
+            return "xmark.circle.fill"
+        }
+    }
+    
+    private var eventDescription: String {
+        return event.description
+    }
+    
+    private func formatTimestamp(_ timestamp: Date, relativeTo startTime: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.string(from: timestamp)
     }
 }
 

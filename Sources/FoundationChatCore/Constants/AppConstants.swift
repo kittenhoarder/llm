@@ -33,6 +33,10 @@ public enum AppConstants {
     public static let tokenReserveOverhead = 50
     public static let minimumTokensForSummary = 100
     
+    // SVDB context optimization defaults
+    public static let defaultSVDBContextTopK = 10
+    public static let defaultSVDBContextRecentMessages = 3
+    
     // Text processing
     public static let minimumSubtaskDescriptionLength = 10
 }
@@ -44,5 +48,8 @@ public enum UserDefaultsKey {
     public static let ragTopK = "ragTopK"
     public static let enabledAgentIds = "enabledAgentIds"
     public static let useCoordinator = "useCoordinator"
+    public static let useSVDBForContextOptimization = "useSVDBForContextOptimization"
+    public static let svdbContextTopK = "svdbContextTopK"
+    public static let svdbContextRecentMessages = "svdbContextRecentMessages"
 }
 

@@ -213,10 +213,15 @@ public struct AgentContext: Sendable {
 ### Context Isolation
 
 `ProgressiveContextBuilder` creates isolated contexts for each agent:
-- Only relevant conversation history
+- Only relevant conversation history (via SVDB semantic retrieval when enabled)
 - Only relevant tool results
 - Token budget enforcement
 - Prevents context pollution between agents
+
+**SVDB Integration:**
+- When SVDB optimization is enabled, context building uses semantic retrieval
+- Each agent receives only messages relevant to their subtask
+- Recent messages are always included for context continuity
 
 ### Context Merging
 
@@ -245,13 +250,59 @@ After agent execution, contexts are merged:
 - Prioritizing recent messages
 - Using `ContextSummarizer` for compression
 
+### Context Optimization
+
+The system uses multiple strategies to optimize context:
+
+1. **SVDB Semantic Retrieval** (primary, when enabled):
+   - Retrieves only relevant messages based on current query
+   - Automatically indexes all messages in SVDB
+   - Falls back to summarization if SVDB unavailable
+
+2. **Message Summarization** (fallback):
+   - Summarizes old messages when context exceeds budget
+   - Keeps recent messages full
+   - Uses `MessageCompactor` for compression
+
+**File**: `Sources/FoundationChatCore/Services/ContextOptimizer.swift`
+
 ### Token Savings
 
 The system tracks token savings vs. single-agent approach:
 - Coordinator analysis tokens
 - Specialized agent tokens (isolated contexts)
 - Synthesis tokens
+- **SVDB-based context optimization savings** (new)
 - Total vs. estimated single-agent usage
+
+#### SVDB-Based Context Optimization
+
+The system uses SVDB (Semantic Vector Database) to optimize conversation context and reduce token usage:
+
+**How it works:**
+1. **Message Indexing**: All conversation messages are automatically indexed in SVDB when saved
+2. **Semantic Retrieval**: When building context, the system uses the current user message as a query to retrieve only relevant messages from SVDB
+3. **Recent Messages**: Last N messages (configurable, default: 3) are always included regardless of relevance
+4. **Token Savings**: Only relevant messages are sent to the LLM instead of full conversation history
+
+**Configuration:**
+- `useSVDBForContextOptimization` (UserDefaults): Enable/disable SVDB optimization (default: true)
+- `svdbContextTopK` (UserDefaults): Number of relevant messages to retrieve (default: 10)
+- `svdbContextRecentMessages` (UserDefaults): Number of recent messages to always include (default: 3)
+
+**Files:**
+- `Sources/FoundationChatCore/Services/RAGService.swift` - Message indexing and retrieval
+- `Sources/FoundationChatCore/Services/ContextOptimizer.swift` - SVDB-based optimization
+- `Sources/FoundationChatCore/Services/AgentService.swift` - Context building with SVDB
+
+**Expected Savings:**
+- **Before**: Full conversation history sent (could be 1000s of tokens)
+- **After**: Only top-K relevant messages + recent messages (typically 200-500 tokens)
+- **Expected Savings**: 50-80% reduction in context tokens for long conversations
+
+**Migration:**
+- New messages are automatically indexed when saved
+- Use `RAGService.indexExistingConversations()` to retroactively index existing conversations
 
 ## Agent Registry
 

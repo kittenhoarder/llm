@@ -387,6 +387,284 @@ public actor RAGService {
         svdb.releaseCollection(collectionName)
         print("🗑️ RAGService: Released collection \(collectionName)")
     }
+    
+    /// Index a single message for RAG retrieval
+    /// - Parameters:
+    ///   - message: The message to index
+    ///   - conversationId: The conversation this message belongs to
+    /// - Throws: RAGError if indexing fails
+    public func indexMessage(_ message: Message, conversationId: UUID) async throws {
+        // Skip empty messages
+        guard !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            print("⚠️ RAGService: Skipping empty message \(message.id)")
+            return
+        }
+        
+        // Get or create collection for this conversation
+        let collectionName = "conversation_\(conversationId.uuidString)"
+        let collection: Collection
+        
+        do {
+            if let existingCollection = svdb.getCollection(collectionName) {
+                collection = existingCollection
+            } else {
+                collection = try svdb.collection(collectionName)
+            }
+        } catch {
+            if let existingCollection = svdb.getCollection(collectionName) {
+                collection = existingCollection
+            } else {
+                throw RAGError.indexingFailed("Failed to get or create collection: \(error.localizedDescription)")
+            }
+        }
+        
+        // Prepare message text: include role and content
+        let messageText = "\(message.role.rawValue.capitalized): \(message.content)"
+        
+        // Check if message needs chunking (if it exceeds chunk size)
+        let messageTokens = messageText.count / 4 // Rough token estimate
+        let needsChunking = messageTokens > chunkSize
+        
+        if needsChunking {
+            // Chunk the message content
+            let chunks = chunker.chunk(text: message.content, chunkSize: chunkSize, overlap: chunkOverlap)
+            
+            guard !chunks.isEmpty else {
+                throw RAGError.chunkingFailed("No chunks created from message")
+            }
+            
+            // Generate embeddings for all chunks
+            let embeddings = try await embeddingService.embedBatch(texts: chunks)
+            
+            guard embeddings.count == chunks.count else {
+                throw RAGError.embeddingMismatch("Generated \(embeddings.count) embeddings for \(chunks.count) chunks")
+            }
+            
+            // Store each chunk in SVDB
+            for (index, (chunk, embedding)) in zip(chunks, embeddings).enumerated() {
+                let doubleEmbedding = embedding.map { Double($0) }
+                
+                // Encode metadata in the document text prefix
+                // Format: [message:{messageId}|role:{role}|chunk:{index}|timestamp:{timestamp}|conversation:{conversationId}]
+                let timestampString = ISO8601DateFormatter().string(from: message.timestamp)
+                let metadataPrefix = "[message:\(message.id.uuidString)|role:\(message.role.rawValue)|chunk:\(index)|timestamp:\(timestampString)|conversation:\(conversationId.uuidString)]"
+                let documentWithMetadata = "\(metadataPrefix)\n\(chunk)"
+                
+                collection.addDocument(
+                    id: UUID(),
+                    text: documentWithMetadata,
+                    embedding: doubleEmbedding
+                )
+            }
+            
+            print("✅ RAGService: Successfully indexed message \(message.id) as \(chunks.count) chunks")
+        } else {
+            // Message fits in one chunk, index as-is
+            // Embed the full message text (including role) for better semantic matching
+            let embedding = try await embeddingService.embed(text: messageText)
+            let doubleEmbedding = embedding.map { Double($0) }
+            
+            // Encode metadata in the document text prefix
+            let timestampString = ISO8601DateFormatter().string(from: message.timestamp)
+            let metadataPrefix = "[message:\(message.id.uuidString)|role:\(message.role.rawValue)|chunk:0|timestamp:\(timestampString)|conversation:\(conversationId.uuidString)]"
+            let documentWithMetadata = "\(metadataPrefix)\n\(messageText)"
+            
+            collection.addDocument(
+                id: UUID(),
+                text: documentWithMetadata,
+                embedding: doubleEmbedding
+            )
+            
+            print("✅ RAGService: Successfully indexed message \(message.id)")
+        }
+    }
+    
+    /// Index all messages in a conversation's history
+    /// - Parameters:
+    ///   - messages: Array of messages to index
+    ///   - conversationId: The conversation ID
+    /// - Throws: RAGError if indexing fails
+    public func indexConversationHistory(_ messages: [Message], conversationId: UUID) async throws {
+        guard !messages.isEmpty else {
+            print("ℹ️ RAGService: No messages to index for conversation \(conversationId)")
+            return
+        }
+        
+        print("📝 RAGService: Indexing \(messages.count) messages for conversation \(conversationId)")
+        
+        var indexedCount = 0
+        var errorCount = 0
+        
+        for message in messages {
+            do {
+                try await indexMessage(message, conversationId: conversationId)
+                indexedCount += 1
+            } catch {
+                errorCount += 1
+                print("⚠️ RAGService: Failed to index message \(message.id): \(error.localizedDescription)")
+                // Continue with other messages even if one fails
+            }
+        }
+        
+        print("✅ RAGService: Indexed \(indexedCount)/\(messages.count) messages (\(errorCount) errors)")
+    }
+    
+    /// Search for relevant messages based on query
+    /// - Parameters:
+    ///   - query: The search query
+    ///   - conversationId: The conversation to search within
+    ///   - topK: Number of results to return (default: uses instance topK)
+    /// - Returns: Array of relevant message chunks sorted by relevance
+    /// - Throws: RAGError if search fails
+    public func searchRelevantMessages(
+        query: String,
+        conversationId: UUID,
+        topK: Int? = nil
+    ) async throws -> [MessageChunk] {
+        let k = topK ?? self.topK
+        let collectionName = "conversation_\(conversationId.uuidString)"
+        
+        // Generate embedding for query
+        let queryEmbedding = try await embeddingService.embed(text: query)
+        let doubleQueryEmbedding = queryEmbedding.map { Double($0) }
+        
+        // Get collection for this conversation
+        guard let collection = svdb.getCollection(collectionName) else {
+            // Collection doesn't exist, return empty results
+            return []
+        }
+        
+        // Search SVDB
+        let searchResults = collection.search(
+            query: doubleQueryEmbedding,
+            num_results: k * 2 // Get more results to filter for messages only
+        )
+        
+        // Convert SearchResult objects to MessageChunk objects
+        var messageChunks: [MessageChunk] = []
+        
+        for result in searchResults {
+            var resultText = result.text
+            var messageId = UUID()
+            var role = MessageRole.user
+            var timestamp = Date()
+            var chunkIndex = 0
+            
+            // Parse metadata from text prefix if present
+            if resultText.hasPrefix("[message:") {
+                let lines = resultText.components(separatedBy: "\n")
+                if let metadataLine = lines.first {
+                    // Parse metadata: [message:{messageId}|role:{role}|chunk:{index}|timestamp:{timestamp}|conversation:{conversationId}]
+                    let components = metadataLine
+                        .replacingOccurrences(of: "[message:", with: "")
+                        .replacingOccurrences(of: "]", with: "")
+                        .components(separatedBy: "|")
+                    
+                    for component in components {
+                        if component.hasPrefix("message:") {
+                            let messageIdString = String(component.dropFirst(8))
+                            if let uuid = UUID(uuidString: messageIdString) {
+                                messageId = uuid
+                            }
+                        } else if component.hasPrefix("role:") {
+                            let roleString = String(component.dropFirst(5))
+                            role = MessageRole(rawValue: roleString) ?? .user
+                        } else if component.hasPrefix("chunk:") {
+                            let chunkIndexString = String(component.dropFirst(6))
+                            chunkIndex = Int(chunkIndexString) ?? 0
+                        } else if component.hasPrefix("timestamp:") {
+                            let timestampString = String(component.dropFirst(11))
+                            if let date = ISO8601DateFormatter().date(from: timestampString) {
+                                timestamp = date
+                            }
+                        }
+                    }
+                }
+                
+                // Remove metadata line from content
+                if lines.count > 1 {
+                    resultText = lines.dropFirst().joined(separator: "\n")
+                } else {
+                    resultText = ""
+                }
+            } else {
+                // Not a message chunk, skip it (might be a file chunk)
+                continue
+            }
+            
+            let chunk = MessageChunk(
+                id: result.id,
+                messageId: messageId,
+                conversationId: conversationId,
+                chunkIndex: chunkIndex,
+                role: role,
+                content: resultText,
+                timestamp: timestamp,
+                embedding: queryEmbedding,
+                metadata: [
+                    "messageId": messageId.uuidString,
+                    "role": role.rawValue,
+                    "chunkIndex": String(chunkIndex),
+                    "score": String(result.score)
+                ]
+            )
+            
+            messageChunks.append(chunk)
+        }
+        
+        // Limit to topK and sort by score (highest first)
+        messageChunks.sort { chunk1, chunk2 in
+            let score1 = Double(chunk1.metadata["score"] ?? "0") ?? 0
+            let score2 = Double(chunk2.metadata["score"] ?? "0") ?? 0
+            return score1 > score2
+        }
+        
+        return Array(messageChunks.prefix(k))
+    }
+    
+    /// Index all existing conversations in the database
+    /// This is a migration method to retroactively index conversation history
+    /// - Parameter conversationService: The conversation service to load conversations from
+    /// - Returns: Migration result with counts of indexed conversations and messages
+    public func indexExistingConversations(conversationService: ConversationService) async throws -> (conversationsIndexed: Int, messagesIndexed: Int, errors: Int) {
+        print("🔄 RAGService: Starting migration to index existing conversations...")
+        
+        var conversationsIndexed = 0
+        var messagesIndexed = 0
+        var errors = 0
+        
+        do {
+            let conversations = try conversationService.loadConversations()
+            print("📝 RAGService: Found \(conversations.count) conversations to index")
+            
+            for conversation in conversations {
+                guard !conversation.isEphemeral else {
+                    continue
+                }
+                
+                guard !conversation.messages.isEmpty else {
+                    continue
+                }
+                
+                do {
+                    try await indexConversationHistory(conversation.messages, conversationId: conversation.id)
+                    conversationsIndexed += 1
+                    messagesIndexed += conversation.messages.count
+                    print("✅ RAGService: Indexed conversation \(conversation.id) (\(conversation.messages.count) messages)")
+                } catch {
+                    errors += 1
+                    print("⚠️ RAGService: Failed to index conversation \(conversation.id): \(error.localizedDescription)")
+                }
+            }
+            
+            print("✅ RAGService: Migration complete - \(conversationsIndexed) conversations, \(messagesIndexed) messages indexed, \(errors) errors")
+        } catch {
+            print("❌ RAGService: Migration failed: \(error.localizedDescription)")
+            throw RAGError.indexingFailed("Failed to load conversations: \(error.localizedDescription)")
+        }
+        
+        return (conversationsIndexed: conversationsIndexed, messagesIndexed: messagesIndexed, errors: errors)
+    }
 }
 
 /// Errors for RAG operations

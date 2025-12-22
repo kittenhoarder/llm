@@ -29,7 +29,7 @@ public class ChatViewModel: ObservableObject {
     @Published var agentNameByMessage: [UUID: String] = [:]
     
     private var modelService: ModelService?
-    private let conversationService: ConversationService
+    nonisolated(unsafe) private let conversationService: ConversationService
     /// Use shared AgentService instance to prevent duplicate agent registration
     private var agentService: AgentService {
         return AgentService.shared
@@ -467,7 +467,8 @@ public class ChatViewModel: ObservableObject {
         if let index = conversations.firstIndex(where: { $0.id == conversationId }) {
             conversations[index].messages.append(userMessage)
             do {
-                try conversationService.addMessage(userMessage, to: conversationId)
+                // Index user message immediately (wait for completion for current context building)
+                try await conversationService.addMessage(userMessage, to: conversationId, indexImmediately: true)
             } catch {
                 print("Error saving user message: \(error)")
             }
@@ -655,7 +656,7 @@ public class ChatViewModel: ObservableObject {
                 }
                 
                 do {
-                    try conversationService.addMessage(assistantMessage, to: conversationId)
+                    try await conversationService.addMessage(assistantMessage, to: conversationId, indexImmediately: false)
                     try conversationService.updateConversation(conversations[index])
                 } catch {
                     print("Error saving assistant message: \(error)")
@@ -687,8 +688,12 @@ public class ChatViewModel: ObservableObject {
     /// Handle progress events from orchestration
     private func handleProgressEvent(_ event: OrchestrationProgressEvent, conversationId: UUID) async {
         var state = orchestrationState ?? OrchestrationState(currentPhase: .decision)
+        let timestamp = Date()
         
         print("📊 Handling progress event: \(String(describing: event))")
+        
+        // Create orchestration event and add to history
+        var orchestrationEvent: OrchestrationEvent?
         
         switch event {
         case .delegationDecision(let shouldDelegate, let reason):
@@ -696,12 +701,31 @@ public class ChatViewModel: ObservableObject {
             state.delegationReason = reason
             state.currentPhase = shouldDelegate ? .analysis : .complete
             
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .delegationDecision,
+                description: shouldDelegate ? "Delegating to specialized agents" : "Responding directly",
+                metadata: ["shouldDelegate": String(shouldDelegate), "reason": reason ?? "", "phase": state.currentPhase.rawValue]
+            )
+            
         case .coordinatorAnalysisStarted:
             state.currentPhase = .analysis
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .phaseChange,
+                description: "Phase: Analysis - Coordinator analyzing task",
+                metadata: ["phase": "Analysis"]
+            )
             
         case .coordinatorAnalysisCompleted(let analysis):
             state.coordinatorAnalysis = analysis
             state.currentPhase = .decomposition
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .phaseChange,
+                description: "Phase: Decomposition - Coordinator analysis completed",
+                metadata: ["phase": "Decomposition", "analysisLength": String(analysis.count)]
+            )
             
         case .taskDecomposition(let decomposition):
             state.decomposition = decomposition
@@ -713,6 +737,17 @@ public class ChatViewModel: ObservableObject {
                 }
             }
             state.currentPhase = .execution
+            
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .taskDecomposition,
+                description: "Task decomposed into \(decomposition.subtasks.count) subtasks",
+                metadata: [
+                    "subtaskCount": String(decomposition.subtasks.count),
+                    "parallelGroups": String(state.parallelGroups.count)
+                ]
+            )
+            
             // #region debug log
             await DebugLogger.shared.log(
                 location: "ChatViewModel.swift:handleProgressEvent",
@@ -726,38 +761,113 @@ public class ChatViewModel: ObservableObject {
             )
             // #endregion
             
-        case .subtaskPruned(let subtaskId, _):
+        case .subtaskPruned(let subtaskId, let rationale):
             // Remove pruned subtask from state
             state.subtaskStates.removeValue(forKey: subtaskId)
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .subtaskFailed,
+                description: "Subtask pruned: \(rationale)",
+                subtaskId: subtaskId,
+                metadata: ["rationale": rationale]
+            )
             
         case .subtaskStarted(let subtask, let agentId, let agentName):
-            state.subtaskStates[subtask.id] = .inProgress(agentId: agentId, agentName: agentName, startTime: Date())
+            state.subtaskStates[subtask.id] = .inProgress(agentId: agentId, agentName: agentName, startTime: timestamp)
             state.currentPhase = .execution
+            
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .subtaskStarted,
+                description: "\(subtask.description)",
+                subtaskId: subtask.id,
+                agentName: agentName,
+                metadata: [
+                    "agentId": agentId.uuidString,
+                    "subtaskDescription": subtask.description
+                ]
+            )
             
         case .subtaskCompleted(let subtask, let result):
             state.subtaskStates[subtask.id] = .completed(result)
             state.completedSubtasks[subtask.id] = result
             
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .subtaskCompleted,
+                description: "\(subtask.description)",
+                subtaskId: subtask.id,
+                agentName: result.agentId.uuidString,
+                metadata: [
+                    "agentId": result.agentId.uuidString,
+                    "success": String(result.success),
+                    "contentLength": String(result.content.count)
+                ]
+            )
+            
         case .subtaskFailed(let subtask, let error):
             state.subtaskStates[subtask.id] = .failed(error)
             
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .subtaskFailed,
+                description: "\(subtask.description) - Failed: \(error)",
+                subtaskId: subtask.id,
+                metadata: ["error": error]
+            )
+            
         case .synthesisStarted:
             state.currentPhase = .synthesis
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .synthesisStarted,
+                description: "Phase: Synthesis - Coordinator synthesizing results",
+                metadata: ["phase": "Synthesis"]
+            )
             
         case .synthesisCompleted:
             state.currentPhase = .synthesis
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .synthesisCompleted,
+                description: "Synthesis completed",
+                metadata: [:]
+            )
             
         case .orchestrationCompleted(let metrics):
             state.metrics = metrics
             state.currentPhase = .complete
             
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .orchestrationCompleted,
+                description: "Orchestration completed - \(metrics.subtasksCreated) subtasks, \(metrics.totalTokens) tokens",
+                metadata: [
+                    "subtasksCreated": String(metrics.subtasksCreated),
+                    "totalTokens": String(metrics.totalTokens),
+                    "tokenSavings": String(format: "%.1f", metrics.tokenSavingsPercentage)
+                ]
+            )
+            
         case .orchestrationFailed(let error):
             state.error = error
             state.currentPhase = .failed
+            
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .orchestrationFailed,
+                description: "Orchestration failed: \(error)",
+                metadata: ["error": error]
+            )
+        }
+        
+        // Add event to history if created
+        if let event = orchestrationEvent {
+            state.eventHistory.append(event)
         }
         
         orchestrationState = state
-        print("📊 Updated orchestration state - Phase: \(state.currentPhase.rawValue), Subtasks: \(state.subtaskStates.count)")
+        print("📊 Updated orchestration state - Phase: \(state.currentPhase.rawValue), Subtasks: \(state.subtaskStates.count), Events: \(state.eventHistory.count)")
     }
     
     // MARK: - Message Actions
@@ -800,7 +910,7 @@ public class ChatViewModel: ObservableObject {
             conversations[index].updatedAt = Date()
             
             try conversationService.updateConversation(conversations[index])
-            try conversationService.addMessage(assistantMessage, to: conversationId)
+            try await conversationService.addMessage(assistantMessage, to: conversationId, indexImmediately: false)
         } catch {
             print("Error regenerating response: \(error)")
             let responseTime = Date().timeIntervalSince(startTime)

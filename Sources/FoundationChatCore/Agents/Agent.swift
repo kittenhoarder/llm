@@ -155,6 +155,13 @@ public class BaseAgent: Agent, @unchecked Sendable {
     /// - Returns: Formatted prompt string
     private func buildPrompt(from task: AgentTask, context: AgentContext) async throws -> String {
         let contextOptimizer = ContextOptimizer()
+        let tokenCounter = TokenCounter()
+        
+        // Calculate available tokens for the prompt (reserve for system, tools, output)
+        let maxPromptTokens = 3500 // Reserve ~600 tokens for system/tools/output
+        let systemAndToolTokens = 200 // Rough estimate for system prompt and tool definitions
+        let outputReserve = 500
+        let availableForContent = maxPromptTokens - systemAndToolTokens - outputReserve
         
         // Optimize conversation history if present
         var optimizedMessages = context.conversationHistory
@@ -167,7 +174,23 @@ public class BaseAgent: Agent, @unchecked Sendable {
             optimizedMessages = optimized.messages
         }
         
-        var prompt = "Task: \(task.description)\n\n"
+        // Count tokens for conversation history
+        let historyTokens = await tokenCounter.countTokens(optimizedMessages)
+        
+        // Truncate task description if needed to fit within token budget
+        var taskDescription = task.description
+        let taskTokens = await tokenCounter.countTokens(taskDescription)
+        let availableForTask = max(100, availableForContent - historyTokens) // At least 100 tokens for task
+        
+        if taskTokens > availableForTask {
+            // Truncate task description
+            let maxChars = availableForTask * 4 // Rough char-to-token conversion
+            let truncated = String(taskDescription.prefix(maxChars))
+            taskDescription = truncated + "\n\n[Message truncated due to length. Full content available in conversation history.]"
+            print("⚠️ Agent '\(name)': Truncated task description from \(taskTokens) to ~\(availableForTask) tokens")
+        }
+        
+        var prompt = "Task: \(taskDescription)\n\n"
         
         if !optimizedMessages.isEmpty {
             prompt += "Conversation History:\n"

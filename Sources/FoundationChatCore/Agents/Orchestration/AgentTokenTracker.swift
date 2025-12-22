@@ -15,6 +15,9 @@ public actor AgentTokenTracker {
     /// Token usage per agent ID
     private var agentTokenUsage: [UUID: AgentTokenUsage] = [:]
     
+    /// SVDB savings per agent ID (tokens saved through SVDB optimization)
+    private var agentSVDBSavings: [UUID: Int] = [:]
+    
     public init(tokenCounter: TokenCounter = TokenCounter()) {
         self.tokenCounter = tokenCounter
     }
@@ -139,6 +142,29 @@ public actor AgentTokenTracker {
         return agentTokenUsage.values.reduce(0) { $0 + $1.totalTokens }
     }
     
+    /// Track SVDB-based token savings for an agent
+    /// - Parameters:
+    ///   - agentId: Agent ID
+    ///   - originalTokens: Original token count before SVDB optimization
+    ///   - optimizedTokens: Token count after SVDB optimization
+    public func trackSVDBSavings(agentId: UUID, originalTokens: Int, optimizedTokens: Int) {
+        let savings = max(0, originalTokens - optimizedTokens)
+        agentSVDBSavings[agentId] = (agentSVDBSavings[agentId] ?? 0) + savings
+    }
+    
+    /// Get SVDB savings for an agent
+    /// - Parameter agentId: Agent ID
+    /// - Returns: Total SVDB savings in tokens
+    public func getSVDBSavings(for agentId: UUID) -> Int {
+        return agentSVDBSavings[agentId] ?? 0
+    }
+    
+    /// Get total SVDB savings across all agents
+    /// - Returns: Total SVDB savings in tokens
+    public func getTotalSVDBSavings() -> Int {
+        return agentSVDBSavings.values.reduce(0, +)
+    }
+    
     /// Store token usage in context metadata
     /// - Parameter context: The context to update
     /// - Returns: Updated context with token usage metadata
@@ -153,11 +179,22 @@ public actor AgentTokenTracker {
             updatedContext.metadata["\(keyPrefix)_tools"] = String(usage.toolCallTokens)
             updatedContext.metadata["\(keyPrefix)_context"] = String(usage.contextTokens)
             updatedContext.metadata["\(keyPrefix)_total"] = String(usage.totalTokens)
+            
+            // Store SVDB savings if available
+            if let svdbSavings = agentSVDBSavings[agentId], svdbSavings > 0 {
+                updatedContext.metadata["\(keyPrefix)_svdb_saved"] = String(svdbSavings)
+            }
         }
         
         // Store total
         let total = getTotalTokenUsage()
         updatedContext.metadata["tokens_total_task"] = String(total)
+        
+        // Store total SVDB savings
+        let totalSVDBSavings = getTotalSVDBSavings()
+        if totalSVDBSavings > 0 {
+            updatedContext.metadata["tokens_svdb_saved_total"] = String(totalSVDBSavings)
+        }
         
         return updatedContext
     }
@@ -165,10 +202,14 @@ public actor AgentTokenTracker {
     /// Calculate token savings vs single-agent approach
     /// - Parameter singleAgentEstimate: Estimated tokens for single-agent approach
     /// - Returns: Savings percentage
+    /// Note: SVDB savings are already reflected in the total token usage (fewer context tokens),
+    /// so we calculate savings as (estimate - actual) / estimate * 100
     public func calculateSavings(singleAgentEstimate: Int) -> Double {
         let total = getTotalTokenUsage()
         guard singleAgentEstimate > 0 else { return 0.0 }
         
+        // Calculate savings: (estimate - actual) / estimate * 100
+        // The actual total already includes the benefit of SVDB optimization (fewer context tokens)
         let savings = Double(singleAgentEstimate - total) / Double(singleAgentEstimate) * 100.0
         return max(0.0, savings)
     }
@@ -176,6 +217,7 @@ public actor AgentTokenTracker {
     /// Reset all tracking
     public func reset() {
         agentTokenUsage.removeAll()
+        agentSVDBSavings.removeAll()
     }
 }
 
