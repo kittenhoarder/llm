@@ -109,6 +109,244 @@ public actor ContextOptimizer {
         self.compactor = MessageCompactor(recentMessagesCount: config.recentMessagesCount)
     }
     
+    /// Optimize context using SVDB semantic retrieval
+    /// - Parameters:
+    ///   - messages: Full conversation messages
+    ///   - query: Current user message to use as search query
+    ///   - conversationId: The conversation ID for SVDB lookup
+    ///   - systemPrompt: Optional system prompt
+    ///   - tools: Available tools
+    /// - Returns: Optimized context with relevant messages retrieved from SVDB
+    public func optimizeContextWithSVDB(
+        messages: [Message],
+        query: String,
+        conversationId: UUID,
+        systemPrompt: String? = nil,
+        tools: [any Tool] = []
+    ) async throws -> OptimizedContext {
+        // Check if SVDB optimization is enabled
+        let useSVDB = UserDefaults.standard.object(forKey: UserDefaultsKey.useSVDBForContextOptimization) as? Bool ?? true
+        
+        guard useSVDB else {
+            // Fall back to standard optimization
+            return try await optimizeContext(messages: messages, systemPrompt: systemPrompt, tools: tools)
+        }
+        
+        // Calculate token usage for system prompt and tools
+        let systemTokens = systemPrompt != nil ? await tokenCounter.countTokens(systemPrompt!) : 0
+        let toolTokens = estimateToolTokens(tools)
+        
+        // Calculate available tokens for messages
+        let reservedTokens = systemTokens + toolTokens + config.outputReserveTokens
+        let availableForMessages = config.maxContextTokens - reservedTokens
+        
+        // Count original message tokens (for savings calculation)
+        let originalMessageTokens = await tokenCounter.countTokens(messages)
+        
+        // Get configuration for SVDB retrieval
+        let svdbTopK = UserDefaults.standard.integer(forKey: UserDefaultsKey.svdbContextTopK)
+        let topK = svdbTopK > 0 ? svdbTopK : AppConstants.defaultSVDBContextTopK
+        
+        let svdbRecentMessages = UserDefaults.standard.integer(forKey: UserDefaultsKey.svdbContextRecentMessages)
+        let recentMessagesCount = svdbRecentMessages > 0 ? svdbRecentMessages : AppConstants.defaultSVDBContextRecentMessages
+        
+        // Always include recent messages (last N messages)
+        let recentMessages = Array(messages.suffix(recentMessagesCount))
+        let recentMessageIds = Set(recentMessages.map { $0.id })
+        
+        // Always include the most recent user message (current query) if it exists
+        // This ensures the current message is in context even if not yet indexed
+        var currentUserMessage: Message? = nil
+        if let lastMessage = messages.last, lastMessage.role == .user {
+            currentUserMessage = lastMessage
+        }
+        
+        // Try to retrieve relevant messages from SVDB
+        var retrievedMessages: [Message] = []
+        var svdbAvailable = false
+        
+        do {
+            let messageChunks = try await RAGService.shared.searchRelevantMessages(
+                query: query,
+                conversationId: conversationId,
+                topK: topK
+            )
+            
+            if !messageChunks.isEmpty {
+                svdbAvailable = true
+                
+                // Group chunks by message ID and reconstruct messages
+                var messageMap: [UUID: (chunks: [MessageChunk], role: MessageRole, timestamp: Date)] = [:]
+                
+                for chunk in messageChunks {
+                    if let existing = messageMap[chunk.messageId] {
+                        var chunks = existing.chunks
+                        chunks.append(chunk)
+                        messageMap[chunk.messageId] = (chunks: chunks, role: chunk.role, timestamp: chunk.timestamp)
+                    } else {
+                        messageMap[chunk.messageId] = (chunks: [chunk], role: chunk.role, timestamp: chunk.timestamp)
+                    }
+                }
+                
+                // Reconstruct messages from chunks (sorted by timestamp)
+                for (messageId, data) in messageMap.sorted(by: { $0.value.timestamp < $1.value.timestamp }) {
+                    // Skip if already in recent messages
+                    if recentMessageIds.contains(messageId) {
+                        continue
+                    }
+                    
+                    // Combine chunks into full message content
+                    let chunks = data.chunks.sorted { $0.chunkIndex < $1.chunkIndex }
+                    // Remove role prefix if present (format: "Role: content")
+                    let content = chunks.map { chunk in
+                        let text = chunk.content
+                        // Remove role prefix if it exists (e.g., "User: " or "Assistant: ")
+                        if let colonIndex = text.firstIndex(of: ":") {
+                            let afterColon = text.index(after: colonIndex)
+                            if afterColon < text.endIndex {
+                                return String(text[afterColon...]).trimmingCharacters(in: .whitespaces)
+                            }
+                        }
+                        return text
+                    }.joined(separator: " ")
+                    
+                    // Find original message to preserve other properties (toolCalls, attachments, etc.)
+                    if let originalMessage = messages.first(where: { $0.id == messageId }) {
+                        // Create a copy with updated content to preserve immutability semantics
+                        let reconstructedMessage = Message(
+                            id: originalMessage.id,
+                            role: originalMessage.role,
+                            content: content,
+                            timestamp: originalMessage.timestamp,
+                            toolCalls: originalMessage.toolCalls,
+                            responseTime: originalMessage.responseTime,
+                            attachments: originalMessage.attachments
+                        )
+                        retrievedMessages.append(reconstructedMessage)
+                    } else {
+                        // Create new message from chunk data (shouldn't happen in normal flow)
+                        let message = Message(
+                            id: messageId,
+                            role: data.role,
+                            content: content,
+                            timestamp: data.timestamp
+                        )
+                        retrievedMessages.append(message)
+                    }
+                }
+            }
+        } catch {
+            // SVDB not available or error occurred, fall back to summarization
+            print("⚠️ ContextOptimizer: SVDB retrieval failed, falling back to summarization: \(error.localizedDescription)")
+        }
+        
+        // Combine recent messages with retrieved messages
+        // Remove duplicates (in case a recent message was also retrieved)
+        let retrievedMessageIds = Set(retrievedMessages.map { $0.id })
+        let uniqueRecentMessages = recentMessages.filter { !retrievedMessageIds.contains($0.id) }
+        
+        // Always include current user message if it exists and isn't already included
+        var messagesToInclude = retrievedMessages + uniqueRecentMessages
+        if let currentMessage = currentUserMessage, !retrievedMessageIds.contains(currentMessage.id) {
+            let isInRecent = recentMessageIds.contains(currentMessage.id)
+            if !isInRecent {
+                messagesToInclude.append(currentMessage)
+            }
+        }
+        
+        // Combine all messages and sort by timestamp to maintain chronological order
+        var optimizedMessages = messagesToInclude
+        optimizedMessages.sort { $0.timestamp < $1.timestamp }
+        
+        // If SVDB wasn't available or returned no results, fall back to standard optimization
+        if !svdbAvailable || optimizedMessages.isEmpty {
+            return try await optimizeContext(messages: messages, systemPrompt: systemPrompt, tools: tools)
+        }
+        
+        // Count optimized message tokens
+        var optimizedMessageTokens = await tokenCounter.countTokens(optimizedMessages)
+        
+        // If messages still exceed budget, truncate long messages first, then compact if needed
+        if optimizedMessageTokens > availableForMessages {
+            // First, truncate individual messages that are too long
+            var truncatedMessages: [Message] = []
+            var currentTokens = 0
+            let maxTokensPerMessage = availableForMessages / max(1, optimizedMessages.count) // Rough per-message limit
+            
+            for message in optimizedMessages.reversed() { // Process from most recent
+                let messageTokens = await tokenCounter.countTokens(message)
+                
+                if messageTokens > maxTokensPerMessage {
+                    // Truncate long message
+                    let maxChars = maxTokensPerMessage * 4 // Rough char-to-token conversion
+                    let truncatedContent = String(message.content.prefix(maxChars))
+                    let truncatedMessage = Message(
+                        id: message.id,
+                        role: message.role,
+                        content: truncatedContent + "... [truncated]",
+                        timestamp: message.timestamp,
+                        toolCalls: message.toolCalls,
+                        responseTime: message.responseTime,
+                        attachments: message.attachments
+                    )
+                    truncatedMessages.insert(truncatedMessage, at: 0)
+                    currentTokens += await tokenCounter.countTokens(truncatedMessage)
+                } else if currentTokens + messageTokens <= availableForMessages {
+                    truncatedMessages.insert(message, at: 0)
+                    currentTokens += messageTokens
+                } else {
+                    // Message doesn't fit, skip it (we'll keep more recent messages)
+                    break
+                }
+            }
+            
+            optimizedMessages = truncatedMessages
+            optimizedMessageTokens = currentTokens
+        }
+        
+        // If optimized messages still exceed budget after truncation, apply compaction
+        if optimizedMessageTokens > availableForMessages {
+            let compactedMessages = try await compactor.compact(
+                messages: optimizedMessages,
+                maxTokens: availableForMessages
+            )
+            
+            let compactedTokens = await tokenCounter.countTokens(compactedMessages)
+            let totalTokens = systemTokens + toolTokens + compactedTokens
+            let messagesTruncated = messages.count - compactedMessages.count
+            
+            return OptimizedContext(
+                messages: compactedMessages,
+                tokenUsage: TokenUsage(
+                    systemTokens: systemTokens,
+                    toolTokens: toolTokens,
+                    messageTokens: compactedTokens,
+                    totalTokens: totalTokens,
+                    availableTokens: config.maxContextTokens - totalTokens
+                ),
+                messagesTruncated: messagesTruncated
+            )
+        }
+        
+        // Optimized messages fit within budget
+        let totalTokens = systemTokens + toolTokens + optimizedMessageTokens
+        let messagesTruncated = messages.count - optimizedMessages.count
+        
+        print("📊 ContextOptimizer: SVDB optimization - Original: \(originalMessageTokens) tokens, Optimized: \(optimizedMessageTokens) tokens, Saved: \(originalMessageTokens - optimizedMessageTokens) tokens")
+        
+        return OptimizedContext(
+            messages: optimizedMessages,
+            tokenUsage: TokenUsage(
+                systemTokens: systemTokens,
+                toolTokens: toolTokens,
+                messageTokens: optimizedMessageTokens,
+                totalTokens: totalTokens,
+                availableTokens: config.maxContextTokens - totalTokens
+            ),
+            messagesTruncated: messagesTruncated
+        )
+    }
+    
     /// Optimize context for a conversation
     /// - Parameters:
     ///   - messages: Conversation messages

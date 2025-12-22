@@ -19,6 +19,48 @@ public enum OrchestrationPhase: String, Sendable, Codable {
     case failed = "Failed"
 }
 
+/// Type of orchestration event
+@available(macOS 26.0, iOS 26.0, *)
+public enum OrchestrationEventType: String, Sendable, Codable {
+    case phaseChange
+    case delegationDecision
+    case taskDecomposition
+    case subtaskStarted
+    case subtaskCompleted
+    case subtaskFailed
+    case synthesisStarted
+    case synthesisCompleted
+    case orchestrationCompleted
+    case orchestrationFailed
+}
+
+/// A single event in the orchestration timeline
+@available(macOS 26.0, iOS 26.0, *)
+public struct OrchestrationEvent: Sendable, Codable {
+    public let timestamp: Date
+    public let eventType: OrchestrationEventType
+    public let description: String
+    public let subtaskId: UUID?
+    public let agentName: String?
+    public let metadata: [String: String]
+    
+    public init(
+        timestamp: Date = Date(),
+        eventType: OrchestrationEventType,
+        description: String,
+        subtaskId: UUID? = nil,
+        agentName: String? = nil,
+        metadata: [String: String] = [:]
+    ) {
+        self.timestamp = timestamp
+        self.eventType = eventType
+        self.description = description
+        self.subtaskId = subtaskId
+        self.agentName = agentName
+        self.metadata = metadata
+    }
+}
+
 /// Execution state of a subtask
 @available(macOS 26.0, iOS 26.0, *)
 public enum SubtaskExecutionState: Sendable, Equatable, Codable {
@@ -76,6 +118,9 @@ public struct OrchestrationState: Sendable, Codable {
     /// Coordinator analysis output
     public var coordinatorAnalysis: String?
     
+    /// Chronological history of orchestration events
+    public var eventHistory: [OrchestrationEvent]
+    
     public init(
         currentPhase: OrchestrationPhase = .decision,
         shouldDelegate: Bool? = nil,
@@ -86,7 +131,8 @@ public struct OrchestrationState: Sendable, Codable {
         parallelGroups: [[DecomposedSubtask]] = [],
         metrics: DelegationMetrics? = nil,
         error: String? = nil,
-        coordinatorAnalysis: String? = nil
+        coordinatorAnalysis: String? = nil,
+        eventHistory: [OrchestrationEvent] = []
     ) {
         self.currentPhase = currentPhase
         self.shouldDelegate = shouldDelegate
@@ -98,6 +144,7 @@ public struct OrchestrationState: Sendable, Codable {
         self.metrics = metrics
         self.error = error
         self.coordinatorAnalysis = coordinatorAnalysis
+        self.eventHistory = eventHistory
     }
     
     /// Get all subtasks from decomposition

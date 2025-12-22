@@ -16,7 +16,7 @@ class ChatViewModel: ObservableObject {
     @Published var isLoading = false
     
     private let modelService = ModelService()
-    private let conversationService: ConversationService
+    nonisolated(unsafe) private let conversationService: ConversationService
     private let agentService = AgentService()
     
     var currentConversation: Conversation? {
@@ -219,7 +219,8 @@ class ChatViewModel: ObservableObject {
         if let index = conversations.firstIndex(where: { $0.id == conversationId }) {
             conversations[index].messages.append(userMessage)
             do {
-                try conversationService.addMessage(userMessage, to: conversationId)
+                // Index user message immediately (for current context building)
+                try await conversationService.addMessage(userMessage, to: conversationId, indexImmediately: true)
             } catch {
                 print("Error saving user message: \(error)")
             }
@@ -259,7 +260,7 @@ class ChatViewModel: ObservableObject {
                         }
                         
                         do {
-                            try conversationService.addMessage(assistantMessage, to: conversationId)
+                            try await conversationService.addMessage(assistantMessage, to: conversationId, indexImmediately: false)
                             try conversationService.updateConversation(conversations[index])
                         } catch {
                             print("Error saving assistant message: \(error)")
@@ -291,7 +292,7 @@ class ChatViewModel: ObservableObject {
                 }
                 
                 do {
-                    try conversationService.addMessage(assistantMessage, to: conversationId)
+                    try await conversationService.addMessage(assistantMessage, to: conversationId, indexImmediately: false)
                     try conversationService.updateConversation(conversations[index])
                 } catch {
                     print("Error saving assistant message: \(error)")

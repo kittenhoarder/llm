@@ -110,41 +110,8 @@ public class DatabaseManager {
             t.column(conversationTokenUsage)
         })
         
-        // Migrate existing databases: add new columns if they don't exist
-        // #region debug log
-        do {
-            try db.run("ALTER TABLE conversations ADD COLUMN agent_configuration TEXT")
-            Task {
-                await DebugLogger.shared.log(
-                    location: "DatabaseManager.swift:initializeDatabase",
-                    message: "ALTER TABLE agent_configuration succeeded",
-                    hypothesisId: "A"
-                )
-            }
-        } catch let error {
-            // Column already exists, ignore
-            Task {
-                await DebugLogger.shared.log(
-                    location: "DatabaseManager.swift:initializeDatabase",
-                    message: "ALTER TABLE agent_configuration failed (expected if column exists)",
-                    hypothesisId: "A",
-                    data: ["error": "\(error)"]
-                )
-            }
-        }
-        // #endregion
-        
-        do {
-            try db.run("ALTER TABLE conversations ADD COLUMN summary TEXT")
-        } catch {
-            // Column already exists, ignore
-        }
-        
-        do {
-            try db.run("ALTER TABLE conversations ADD COLUMN token_usage INTEGER")
-        } catch {
-            // Column already exists, ignore
-        }
+        // Note: agent_configuration, summary, and token_usage are already in CREATE TABLE
+        // No need to ALTER TABLE for these columns
         
         // Create messages table
         try db.run(messages.create(ifNotExists: true) { t in
@@ -154,21 +121,47 @@ public class DatabaseManager {
             t.column(messageContent)
             t.column(messageTimestamp)
             t.column(messageToolCalls)
+            t.column(messageAttachments)
+            t.column(messageOrchestrationState)
             t.foreignKey(messageConversationId, references: conversations, conversationId, delete: .cascade)
         })
         
+        // Helper function to check if a column exists in a table
+        func columnExists(tableName: String, columnName: String) -> Bool {
+            do {
+                let pragma = try db.prepare("PRAGMA table_info(\(tableName))")
+                for row in pragma {
+                    // PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
+                    // Column name is at index 1
+                    if row.count > 1, let name = row[1] as? String, name == columnName {
+                        return true
+                    }
+                }
+            } catch {
+                // If we can't check, return false and let ALTER TABLE handle it
+                return false
+            }
+            return false
+        }
+        
         // Migrate existing databases: add attachments column if it doesn't exist
-        do {
-            try db.run("ALTER TABLE messages ADD COLUMN attachments TEXT")
-        } catch {
-            // Column already exists, ignore
+        // Only attempt ALTER TABLE if column doesn't exist to avoid duplicate column errors
+        if !columnExists(tableName: "messages", columnName: "attachments") {
+            do {
+                try db.run("ALTER TABLE messages ADD COLUMN attachments TEXT")
+            } catch {
+                // Column already exists or other error, ignore silently
+            }
         }
         
         // Migrate existing databases: add orchestration_state column if it doesn't exist
-        do {
-            try db.run("ALTER TABLE messages ADD COLUMN orchestration_state TEXT")
-        } catch {
-            // Column already exists, ignore
+        // Only attempt ALTER TABLE if column doesn't exist to avoid duplicate column errors
+        if !columnExists(tableName: "messages", columnName: "orchestration_state") {
+            do {
+                try db.run("ALTER TABLE messages ADD COLUMN orchestration_state TEXT")
+            } catch {
+                // Column already exists or other error, ignore silently
+            }
         }
         
         // Create files table
@@ -183,12 +176,8 @@ public class DatabaseManager {
             t.column(fileFileSize)
         })
         
-        // Migrate existing databases: add is_indexed column if it doesn't exist
-        do {
-            try db.run("ALTER TABLE files ADD COLUMN is_indexed INTEGER DEFAULT 0")
-        } catch {
-            // Column already exists, ignore
-        }
+        // Note: is_indexed is already in CREATE TABLE
+        // No need to ALTER TABLE for this column
         
         // Create indexes
         try db.run(messages.createIndex(messageConversationId, ifNotExists: true))

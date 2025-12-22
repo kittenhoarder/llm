@@ -119,18 +119,37 @@ public actor TaskDecompositionParser {
                 guard let sectionText = subtaskSections[subtaskNumber] else { continue }
                 
                 // Extract description from header (first line after "Subtask N:")
+                // Look for the actual task description, which might be on the next line after numbered items
                 let headerPattern = #"Subtask\s+\d+\s*:\s*([^\n]+)"#
                 var description = ""
                 if let headerRegex = try? NSRegularExpression(pattern: headerPattern, options: []),
                    let headerMatch = headerRegex.firstMatch(in: sectionText, range: NSRange(sectionText.startIndex..., in: sectionText)),
                    headerMatch.numberOfRanges >= 2,
                    let descRange = Range(headerMatch.range(at: 1), in: sectionText) {
-                    description = String(sectionText[descRange]).trimmingCharacters(in: .whitespaces)
+                    let headerDesc = String(sectionText[descRange]).trimmingCharacters(in: .whitespaces)
+                    
+                    // Check if header description is just a title (like "Identify Relevant Sources")
+                    // If so, look for "**Specific Task Description**: ..." in the section
+                    if !isMetadataField(headerDesc) && headerDesc.count > 10 {
+                        description = headerDesc
+                    } else {
+                        // Look for "**Specific Task Description**: ..." pattern
+                        let taskDescPattern = #"\*\*Specific Task Description\*\*:\s*([^\n]+)"#
+                        if let taskDescRegex = try? NSRegularExpression(pattern: taskDescPattern, options: [.caseInsensitive]),
+                           let taskDescMatch = taskDescRegex.firstMatch(in: sectionText, range: NSRange(sectionText.startIndex..., in: sectionText)),
+                           taskDescMatch.numberOfRanges >= 2,
+                           let taskDescRange = Range(taskDescMatch.range(at: 1), in: sectionText) {
+                            description = String(sectionText[taskDescRange]).trimmingCharacters(in: .whitespaces)
+                        } else if !isMetadataField(headerDesc) {
+                            // Fallback to header description if it's not metadata
+                            description = headerDesc
+                        }
+                    }
                 }
                 
                 if !description.isEmpty {
                     // Parse subtask without dependencies first (will add them in second pass)
-                    if var subtask = parseSubtaskText(description, availableAgents: availableAgents) {
+                    if let subtask = parseSubtaskText(description, availableAgents: availableAgents) {
                         subtaskNumberToID[subtaskNumber] = subtask.id
                         parsedSubtasks.append((subtaskNumber, subtask))
                     } else {
@@ -143,11 +162,14 @@ public actor TaskDecompositionParser {
             for (subtaskNumber, subtask) in parsedSubtasks {
                 var finalSubtask = subtask
                 if let sectionText = subtaskSections[subtaskNumber] {
+                    print("🔍 TaskDecompositionParser: Extracting dependencies for Subtask \(subtaskNumber)")
+                    print("🔍 TaskDecompositionParser: Section text: \(String(sectionText.prefix(200)))")
                     let dependencies = extractDependencies(
                         from: sectionText,
                         subtaskNumber: subtaskNumber,
                         subtaskNumberToID: subtaskNumberToID
                     )
+                    print("🔍 TaskDecompositionParser: Found \(dependencies.count) dependencies for Subtask \(subtaskNumber)")
                     if !dependencies.isEmpty {
                         // Create new subtask with dependencies
                         finalSubtask = DecomposedSubtask(
@@ -160,8 +182,12 @@ public actor TaskDecompositionParser {
                             canExecuteInParallel: dependencies.isEmpty && subtask.canExecuteInParallel,
                             estimatedTokenCost: subtask.estimatedTokenCost
                         )
-                        print("🔗 TaskDecompositionParser: Subtask \(subtaskNumber) has \(dependencies.count) dependencies")
+                        print("🔗 TaskDecompositionParser: Subtask \(subtaskNumber) has \(dependencies.count) dependencies: \(dependencies.map { $0.uuidString.prefix(8) })")
+                    } else {
+                        print("⚠️ TaskDecompositionParser: Subtask \(subtaskNumber) has NO dependencies (may be incorrect)")
                     }
+                } else {
+                    print("⚠️ TaskDecompositionParser: No section text found for Subtask \(subtaskNumber)")
                 }
                 subtasks.append(finalSubtask)
             }
@@ -391,6 +417,30 @@ public actor TaskDecompositionParser {
     /// Check if text is a metadata field (not an actual subtask)
     private func isMetadataField(_ text: String) -> Bool {
         let lowercased = text.lowercased()
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        
+        // Check for lines that start with "**" followed by metadata field names
+        if trimmed.hasPrefix("**") {
+            let metadataFieldPatterns = [
+                "**dependencies",
+                "**parallel capability",
+                "**parallel",
+                "**agent handling",
+                "**agent to handle",
+                "**agent:",
+                "**capabilities needed",
+                "**capability",
+                "**can run in parallel",
+                "**must be done after",
+                "**requires completion"
+            ]
+            for pattern in metadataFieldPatterns {
+                if lowercased.hasPrefix(pattern.lowercased()) {
+                    return true
+                }
+            }
+        }
+        
         // Check for markdown-style metadata patterns
         let metadataPatterns = [
             "**capabilities needed:**",
@@ -398,26 +448,30 @@ public actor TaskDecompositionParser {
             "**agent to handle:**",
             "**dependencies:**",
             "**dependencies on other subtasks:**",
-            "**specific task description:**",
-            "**task description:**",
+            "**parallel capability:**",
+            "**parallel:**",
             "**can run in parallel:**",
             "**overall task flow:**",
             "**initialization:**",
             "**parallel execution:**",
             "**completion of subtasks:**",
+            "**must be done after:**",
+            "**requires completion:**",
             "capabilities needed:",
             "agent:",
             "agent to handle:",
             "dependencies:",
             "dependencies on other subtasks:",
-            "specific task description:",
-            "task description:",
+            "parallel capability:",
+            "parallel:",
             "can run in parallel:",
             "this breakdown ensures",
             "overall task flow",
             "initialization:",
             "parallel execution:",
-            "completion of subtasks:"
+            "completion of subtasks:",
+            "must be done after",
+            "requires completion"
         ]
         
         // If text starts with a metadata pattern, it's likely a metadata field
@@ -435,7 +489,6 @@ public actor TaskDecompositionParser {
         }
         
         // Check for lines that start with "- **" or "* **" (bullet points with bold metadata)
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
         if trimmed.hasPrefix("- **") || trimmed.hasPrefix("* **") {
             return true
         }
@@ -445,6 +498,31 @@ public actor TaskDecompositionParser {
             // Check if it's mostly just a label with minimal content
             let parts = text.split(separator: ":")
             if parts.count == 2 && parts[1].trimmingCharacters(in: .whitespaces).count < 20 {
+                return true
+            }
+        }
+        
+        // Check for dependency statements that are just metadata
+        if lowercased.contains("requires completion of subtask") || 
+           lowercased.contains("depends on subtask") ||
+           lowercased.contains("must be done after subtask") {
+            // If the text is ONLY about dependencies and doesn't describe an actual task, it's metadata
+            if !lowercased.contains("task description") && 
+               !lowercased.contains("identify") &&
+               !lowercased.contains("collect") &&
+               !lowercased.contains("analyze") &&
+               !lowercased.contains("compile") &&
+               !lowercased.contains("finalize") &&
+               !lowercased.contains("gather") {
+                return true
+            }
+        }
+        
+        // Check for parallel capability statements that are just metadata
+        if (lowercased.contains("parallel capability") || lowercased.contains("can run in parallel")) &&
+           !lowercased.contains("task description") {
+            // If it's just talking about parallel capability without describing a task, it's metadata
+            if text.count < 80 {
                 return true
             }
         }
@@ -542,27 +620,38 @@ public actor TaskDecompositionParser {
         var dependencyUUIDs: [UUID] = []
         let lowercased = text.lowercased()
         
+        // First, try to extract from markdown bold format: **Dependencies:** Subtask N
+        // Remove markdown bold markers for easier matching
+        let cleanedText = text.replacingOccurrences(of: "**", with: "").lowercased()
+        
         // Extract subtask numbers from dependency patterns
+        // Patterns should account for markdown formatting and various phrasings
         let dependencyPatterns = [
-            #"dependencies?\s*:\s*subtask\s+(\d+)"#,
-            #"dependencies?\s+on\s+(?:other\s+)?subtasks?\s*:\s*subtask\s+(\d+)"#,
-            #"depends?\s+on\s*:\s*subtask\s+(\d+)"#,
-            #"depends?\s+on\s+subtask\s+(\d+)"#,
-            #"after\s+subtask\s+(\d+)"#,
-            #"following\s+subtask\s+(\d+)"#
+            #"dependencies?\s*:\s*subtask\s+(\d+)"#,  // "Dependencies: Subtask 1"
+            #"dependencies?\s+on\s+(?:other\s+)?subtasks?\s*:\s*subtask\s+(\d+)"#,  // "Dependencies on other subtasks: Subtask 1"
+            #"depends?\s+on\s*:\s*subtask\s+(\d+)"#,  // "Depends on: Subtask 1"
+            #"depends?\s+on\s+subtask\s+(\d+)"#,  // "Depends on Subtask 1"
+            #"after\s+subtask\s+(\d+)"#,  // "After Subtask 1"
+            #"following\s+subtask\s+(\d+)"#,  // "Following Subtask 1"
+            #"requires?\s+subtask\s+(\d+)"#,  // "Requires Subtask 1"
+            #"requires?\s+completion\s+of\s+subtask\s+(\d+)"#  // "Requires completion of Subtask 1"
         ]
         
         var foundNumbers: Set<Int> = []
         
-        for pattern in dependencyPatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-                let matches = regex.matches(in: lowercased, range: NSRange(lowercased.startIndex..., in: lowercased))
-                for match in matches {
-                    if match.numberOfRanges >= 2,
-                       let numberRange = Range(match.range(at: 1), in: lowercased),
-                       let depNumber = Int(String(lowercased[numberRange])),
-                       depNumber != subtaskNumber { // Don't depend on self
-                        foundNumbers.insert(depNumber)
+        // Try patterns on both original and cleaned text
+        for textToSearch in [lowercased, cleanedText] {
+            for pattern in dependencyPatterns {
+                if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                    let matches = regex.matches(in: textToSearch, range: NSRange(textToSearch.startIndex..., in: textToSearch))
+                    for match in matches {
+                        if match.numberOfRanges >= 2,
+                           let numberRange = Range(match.range(at: 1), in: textToSearch),
+                           let depNumber = Int(String(textToSearch[numberRange])),
+                           depNumber != subtaskNumber { // Don't depend on self
+                            foundNumbers.insert(depNumber)
+                            print("🔍 TaskDecompositionParser: Found dependency pattern '\(pattern)' matching Subtask \(depNumber)")
+                        }
                     }
                 }
             }
@@ -570,22 +659,26 @@ public actor TaskDecompositionParser {
         
         // Also check for comma-separated lists like "Dependencies: Subtask 1, Subtask 2"
         let listPattern = #"dependencies?\s*:\s*subtask\s+(\d+)(?:\s*,\s*subtask\s+(\d+))*"#
-        if let regex = try? NSRegularExpression(pattern: listPattern, options: [.caseInsensitive]) {
-            let matches = regex.matches(in: lowercased, range: NSRange(lowercased.startIndex..., in: lowercased))
-            for match in matches {
-                // First number is in group 1
-                if match.numberOfRanges >= 2,
-                   let firstRange = Range(match.range(at: 1), in: lowercased),
-                   let firstNum = Int(String(lowercased[firstRange])),
-                   firstNum != subtaskNumber {
-                    foundNumbers.insert(firstNum)
-                }
-                // Additional numbers in subsequent groups
-                for i in 2..<match.numberOfRanges {
-                    if let range = Range(match.range(at: i), in: lowercased),
-                       let num = Int(String(lowercased[range])),
-                       num != subtaskNumber {
-                        foundNumbers.insert(num)
+        for textToSearch in [lowercased, cleanedText] {
+            if let regex = try? NSRegularExpression(pattern: listPattern, options: [.caseInsensitive]) {
+                let matches = regex.matches(in: textToSearch, range: NSRange(textToSearch.startIndex..., in: textToSearch))
+                for match in matches {
+                    // First number is in group 1
+                    if match.numberOfRanges >= 2,
+                       let firstRange = Range(match.range(at: 1), in: textToSearch),
+                       let firstNum = Int(String(textToSearch[firstRange])),
+                       firstNum != subtaskNumber {
+                        foundNumbers.insert(firstNum)
+                        print("🔍 TaskDecompositionParser: Found list dependency pattern matching Subtask \(firstNum)")
+                    }
+                    // Additional numbers in subsequent groups
+                    for i in 2..<match.numberOfRanges {
+                        if let range = Range(match.range(at: i), in: textToSearch),
+                           let num = Int(String(textToSearch[range])),
+                           num != subtaskNumber {
+                            foundNumbers.insert(num)
+                            print("🔍 TaskDecompositionParser: Found list dependency pattern matching Subtask \(num)")
+                        }
                     }
                 }
             }
