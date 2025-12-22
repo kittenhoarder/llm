@@ -10,16 +10,15 @@ import UniformTypeIdentifiers
 
 /// Agent that reads and processes various file formats
 ///
-/// **Status**: ⚠️ Partially Functional
+/// **Status**: ✅ Fully Functional
 /// - Can read files from the file system
 /// - Requires file path to be provided in task parameters or context
 /// - Supports text files, markdown, Swift code, JSON, CSV
-/// - PDF reading is limited (basic text extraction not yet implemented)
+/// - Full PDF text extraction with PDFKit
 /// - File size limit: 10MB
 ///
 /// **Tool Wiring**: ⚠️ No tools wired - reads files directly via FileManager
 /// - TODO: Consider adding a file picker tool for better UX
-/// - TODO: Improve PDF text extraction support
 @available(macOS 26.0, iOS 26.0, *)
 public class FileReaderAgent: BaseAgent, @unchecked Sendable {
     /// Maximum file size to read
@@ -31,7 +30,7 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
     public init() {
         super.init(
             name: AgentName.fileReader,
-            description: "Reads and processes files from the file system. Supports text files, markdown, Swift code, JSON, CSV, and basic PDF reading.",
+            description: "Reads and processes files from the file system. Supports text files, markdown, Swift code, JSON, CSV, and full PDF text extraction.",
             capabilities: [.fileReading],
             tools: []
         )
@@ -116,11 +115,24 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
             }
         }
         
+        // Track original file size for token savings calculation
+        var originalFileContentTokens: Int? = nil
+        var actualFileContentTokens: Int? = nil
+        
         // Fallback to full file read if RAG didn't provide content
         if fileContent == nil {
             do {
                 let fullContent = try await readFile(at: filePath)
-                fileContent = processFileContent(fullContent, filePath: filePath)
+                // Count original file tokens (before truncation)
+                let tokenCounter = TokenCounter()
+                originalFileContentTokens = await tokenCounter.countTokens(fullContent)
+                
+                fileContent = await processFileContent(fullContent, filePath: filePath)
+                
+                // Count actual tokens used (after truncation/processing)
+                if let processed = fileContent {
+                    actualFileContentTokens = await tokenCounter.countTokens(processed)
+                }
             } catch {
                 return AgentResult(
                     agentId: id,
@@ -130,6 +142,37 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
                     error: error.localizedDescription
                 )
             }
+        } else if !ragChunks.isEmpty {
+            // RAG chunks were used - calculate savings
+            let tokenCounter = TokenCounter()
+            
+            // To get accurate savings, we need to estimate the original file size
+            // Option 1: Read the full file (expensive but accurate)
+            // Option 2: Estimate based on file size and chunk count
+            // We'll try to read the file to get accurate count, but catch errors gracefully
+            do {
+                let fullContent = try await readFile(at: filePath)
+                originalFileContentTokens = await tokenCounter.countTokens(fullContent)
+            } catch {
+                // If reading fails, estimate based on file size
+                // Get file size from file system
+                if let fileSize = try? FileManager.default.attributesOfItem(atPath: filePath)[.size] as? Int64 {
+                    // Estimate: file size in bytes / 4 ≈ characters / 4 ≈ tokens
+                    // For PDFs, this is conservative since PDFs have overhead
+                    originalFileContentTokens = Int(fileSize) / 4
+                } else {
+                    // Fallback: estimate based on chunk count
+                    // From logs: 398 chunks indexed, each ~1000 chars = ~398k chars ≈ 99.5k tokens
+                    let avgChunkSize = 1000 // characters per chunk
+                    let estimatedChunks = 400 // Conservative estimate for large PDFs
+                    originalFileContentTokens = (estimatedChunks * avgChunkSize) / 4
+                }
+            }
+            
+            // Count actual tokens in RAG chunks
+            if let ragContent = fileContent {
+                actualFileContentTokens = await tokenCounter.countTokens(ragContent)
+            }
         }
         
         // Build context for model
@@ -138,10 +181,35 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
         updatedContext.ragChunks = ragChunks
         updatedContext.toolResults["fileContent:\(filePath)"] = fileContent ?? ""
         
+        // Store file content token savings in metadata
+        if let original = originalFileContentTokens,
+           let actual = actualFileContentTokens,
+           original > actual {
+            let savings = original - actual
+            updatedContext.metadata["tokens_file_content_original"] = String(original)
+            updatedContext.metadata["tokens_file_content_actual"] = String(actual)
+            updatedContext.metadata["tokens_file_content_saved"] = String(savings)
+            
+            // #region debug log
+            await DebugLogger.shared.log(
+                location: "FileReaderAgent.swift:process",
+                message: "File content token savings calculated",
+                hypothesisId: "A",
+                data: [
+                    "originalTokens": original,
+                    "actualTokens": actual,
+                    "savings": savings,
+                    "savingsPercentage": Double(savings) / Double(original) * 100.0,
+                    "usedRAG": !ragChunks.isEmpty
+                ]
+            )
+            // #endregion
+        }
+        
         // Create a task for the model to analyze the file
         let contentLabel = !ragChunks.isEmpty ? "relevant file chunks" : "file content"
-        let analysisTask = AgentTask(
-            description: """
+        let fileContentLength = fileContent?.count ?? 0
+        let analysisTaskDescription = """
             Analyze the following \(contentLabel):
             
             File: \(filePath)
@@ -150,7 +218,26 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
             \(fileContent ?? "")
             
             User request: \(task.description)
-            """,
+            """
+        let analysisTaskDescriptionLength = analysisTaskDescription.count
+        
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "FileReaderAgent.swift:process",
+            message: "Creating analysis task with file content",
+            hypothesisId: "A,B,C",
+            data: [
+                "fileContentLength": fileContentLength,
+                "analysisTaskDescriptionLength": analysisTaskDescriptionLength,
+                "estimatedTokens": analysisTaskDescriptionLength / 4,
+                "hasRAGChunks": !ragChunks.isEmpty,
+                "ragChunkCount": ragChunks.count
+            ]
+        )
+        // #endregion
+        
+        let analysisTask = AgentTask(
+            description: analysisTaskDescription,
             requiredCapabilities: [],
             parameters: task.parameters
         )
@@ -225,7 +312,7 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
         // Detect file type and decode accordingly
         let content: String
         if let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType {
-            content = try decodeFile(data: data, type: type)
+            content = try await decodeFile(data: data, type: type)
         } else {
             // Fallback to UTF-8
             guard let text = String(data: data, encoding: .utf8) else {
@@ -245,7 +332,7 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
     ///   - data: File data
     ///   - type: Content type
     /// - Returns: Decoded string
-    private func decodeFile(data: Data, type: UTType) throws -> String {
+    private func decodeFile(data: Data, type: UTType) async throws -> String {
         // Text-based types
         if type.conforms(to: .text) || type.conforms(to: .plainText) {
             guard let text = String(data: data, encoding: .utf8) else {
@@ -278,10 +365,19 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
             return "[Image file - Use VisionAgent to analyze this image. File size: \(data.count) bytes]"
         }
         
-        // PDF - basic text extraction (limited)
+        // PDF - extract text using PDFTextExtractor
         if type.conforms(to: .pdf) {
-            // For now, return a placeholder - full PDF parsing would require additional libraries
-            return "[PDF file - basic text extraction not yet implemented. File size: \(data.count) bytes]"
+            do {
+                let pdfContent = try await PDFTextExtractor.extractText(from: data)
+                // Format with metadata for better context
+                return pdfContent.formatted()
+            } catch PDFExtractionError.passwordProtected {
+                return "[PDF file - password-protected. Cannot extract text. File size: \(data.count) bytes]"
+            } catch PDFExtractionError.invalidPDF(let reason) {
+                return "[PDF file - invalid or corrupted: \(reason). File size: \(data.count) bytes]"
+            } catch {
+                return "[PDF file - extraction failed: \(error.localizedDescription). File size: \(data.count) bytes]"
+            }
         }
         
         // Default: try UTF-8
@@ -296,11 +392,38 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
     ///   - content: Raw file content
     ///   - filePath: File path
     /// - Returns: Processed content
-    private func processFileContent(_ content: String, filePath: String) -> String {
+    private func processFileContent(_ content: String, filePath: String) async -> String {
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "FileReaderAgent.swift:processFileContent",
+            message: "Processing file content",
+            hypothesisId: "A,B,C",
+            data: [
+                "originalLength": content.count,
+                "estimatedTokens": content.count / 4,
+                "filePath": filePath
+            ]
+        )
+        // #endregion
+        
         // Truncate if too long (keep first 50k characters)
-        let maxLength = 50_000
+        // Note: 50k chars ≈ 12.5k tokens, but context window is 4096 tokens
+        // So we should truncate to ~16k characters (4096 * 4)
+        let maxLength = 16_000  // Reduced from 50k to fit 4096 token limit
         if content.count > maxLength {
             let truncated = String(content.prefix(maxLength))
+            // #region debug log
+            await DebugLogger.shared.log(
+                location: "FileReaderAgent.swift:processFileContent",
+                message: "Truncated file content",
+                hypothesisId: "A",
+                data: [
+                    "originalLength": content.count,
+                    "truncatedLength": truncated.count,
+                    "estimatedTokens": truncated.count / 4
+                ]
+            )
+            // #endregion
             return "\(truncated)\n\n[File truncated - original length: \(content.count) characters]"
         }
         

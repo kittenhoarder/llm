@@ -58,21 +58,79 @@ public actor EmbeddingService {
         let words = text.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
         
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "EmbeddingService.swift:embed",
+            message: "Processing text for embedding",
+            hypothesisId: "A,B,C",
+            data: [
+                "textLength": text.count,
+                "textPreview": String(text.prefix(100)),
+                "wordCount": words.count,
+                "wordsPreview": Array(words.prefix(10))
+            ]
+        )
+        // #endregion
+        
         guard !words.isEmpty else {
+            // #region debug log
+            await DebugLogger.shared.log(
+                location: "EmbeddingService.swift:embed",
+                message: "Empty words array, returning zero vector",
+                hypothesisId: "B",
+                data: [
+                    "textLength": text.count,
+                    "textPreview": String(text.prefix(100))
+                ]
+            )
+            // #endregion
             // Return zero vector for empty text
             return Array(repeating: 0.0, count: 300) // Default dimension
         }
         
         var embeddingVectors: [[Double]] = []
+        var wordsWithEmbeddings: [String] = []
+        var wordsWithoutEmbeddings: [String] = []
         
         for word in words {
             // Get embedding for each word
             if let vector = embedding.vector(for: word.lowercased()) {
                 embeddingVectors.append(vector)
+                wordsWithEmbeddings.append(word)
+            } else {
+                wordsWithoutEmbeddings.append(word)
             }
         }
         
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "EmbeddingService.swift:embed",
+            message: "Word embedding results",
+            hypothesisId: "A,B,C",
+            data: [
+                "totalWords": words.count,
+                "wordsWithEmbeddings": wordsWithEmbeddings.count,
+                "wordsWithoutEmbeddings": wordsWithoutEmbeddings.count,
+                "wordsWithoutEmbeddingsPreview": Array(wordsWithoutEmbeddings.prefix(20)),
+                "embeddingVectorsCount": embeddingVectors.count
+            ]
+        )
+        // #endregion
+        
         guard !embeddingVectors.isEmpty else {
+            // #region debug log
+            await DebugLogger.shared.log(
+                location: "EmbeddingService.swift:embed",
+                message: "No embeddings generated - throwing error",
+                hypothesisId: "A,B,C",
+                data: [
+                    "textLength": text.count,
+                    "textPreview": String(text.prefix(200)),
+                    "wordCount": words.count,
+                    "wordsWithoutEmbeddings": Array(wordsWithoutEmbeddings.prefix(50))
+                ]
+            )
+            // #endregion
             throw EmbeddingError.embeddingGenerationFailed("No embeddings generated for text")
         }
         

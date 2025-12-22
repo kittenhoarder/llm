@@ -62,6 +62,25 @@ public struct OrchestratorPattern: OrchestrationPattern {
         context: AgentContext,
         progressTracker: OrchestrationProgressTracker? = nil
     ) async throws -> AgentResult {
+        // #region debug log
+        let agentNames = agents.map { $0.name }
+        let agentIds = agents.map { $0.id.uuidString }
+        let agentCapabilitiesDict = Dictionary(uniqueKeysWithValues: agents.map { ($0.name, Array($0.capabilities.map { $0.rawValue })) })
+        await DebugLogger.shared.log(
+            location: "OrchestratorPattern.swift:execute",
+            message: "execute() called with agents array",
+            hypothesisId: "A,D",
+            data: [
+                "agentCount": agents.count,
+                "agentNames": agentNames,
+                "agentIds": agentIds,
+                "agentCapabilities": agentCapabilitiesDict,
+                "hasRAGChunks": !context.ragChunks.isEmpty,
+                "ragChunksCount": context.ragChunks.count,
+                "fileReferencesCount": context.fileReferences.count
+            ]
+        )
+        // #endregion
         let _ = Date()
         var coordinatorAnalysisTime: TimeInterval = 0
         var coordinatorSynthesisTime: TimeInterval = 0
@@ -192,6 +211,8 @@ public struct OrchestratorPattern: OrchestrationPattern {
             
             ## 5. Available Agents
             
+            **IMPORTANT: You MUST only use agents from this list. Do NOT create subtasks for agents that are not listed here.**
+            
             \(agents.map { "**\($0.name)**: \($0.description) (capabilities: \($0.capabilities.map { $0.rawValue }.joined(separator: ", ")))" }.joined(separator: "\n\n"))
             """
         
@@ -207,36 +228,149 @@ public struct OrchestratorPattern: OrchestrationPattern {
             """
         }
         
-        // Truncate task description if too long for analysis prompt
+        // Truncate task description if too long for analysis prompt (do this BEFORE adding RAG chunks)
         let tokenCounter = TokenCounter()
         var taskDescriptionForAnalysis = task.description
         let taskTokens = await tokenCounter.countTokens(taskDescriptionForAnalysis)
         
-        // Reserve tokens for the analysis prompt structure and context
-        // The analysis prompt itself is quite long, so limit task description
-        if taskTokens > 2000 {
-            let maxChars = 2000 * 4 // Rough char-to-token conversion
+        // Reserve tokens for the analysis prompt structure, RAG chunks, and context
+        // The analysis prompt itself is quite long (~1500 tokens), reserve space for RAG chunks (~500 tokens)
+        let maxTaskTokens = 2000
+        if taskTokens > maxTaskTokens {
+            let maxChars = maxTaskTokens * 4 // Rough char-to-token conversion
             let truncated = String(taskDescriptionForAnalysis.prefix(maxChars))
             taskDescriptionForAnalysis = truncated + "\n\n[Full message content available in conversation history above]"
-            print("⚠️ OrchestratorPattern: Truncated task description in analysis prompt from \(taskTokens) to ~2000 tokens")
+            print("⚠️ OrchestratorPattern: Truncated task description in analysis prompt from \(taskTokens) to ~\(maxTaskTokens) tokens")
+        }
+        
+        // Add RAG chunks if available, with token-aware truncation
+        if !context.ragChunks.isEmpty {
+            // Calculate available tokens for RAG chunks
+            // Reserve ~2000 tokens for analysis prompt structure, ~500 for task description, ~500 for output
+            let maxPromptTokens = 4096
+            let reservedTokens = 2000 + 500 + 500 // prompt structure + task + output reserve
+            let availableForRAG = max(0, maxPromptTokens - reservedTokens - Int(taskTokens))
+            
+            var ragContent = ""
+            var ragTokensUsed = 0
+            let ragHeader = "\n\n## 7. Relevant Document Content (from attached files)\n\nThe following content was retrieved from attached files and is highly relevant to this task:\n\n"
+            let ragFooter = "\n\n**IMPORTANT:** If the task can be answered using this document content, you should NOT create web search subtasks. Instead, delegate to the File Reader agent to analyze this content, or answer directly if the information is already provided above."
+            let ragHeaderTokens = await tokenCounter.countTokens(ragHeader + ragFooter)
+            
+            // Add chunks until we run out of token budget
+            for chunk in context.ragChunks.prefix(5) {
+                let chunkText = ragContent.isEmpty ? chunk.content : "\n\n---\n\n\(chunk.content)"
+                let chunkTokens = await tokenCounter.countTokens(chunkText)
+                
+                if ragTokensUsed + chunkTokens + ragHeaderTokens <= availableForRAG {
+                    ragContent += chunkText
+                    ragTokensUsed += chunkTokens
+                } else {
+                    // Truncate this chunk to fit remaining budget
+                    let remainingTokens = max(0, availableForRAG - ragTokensUsed - ragHeaderTokens)
+                    if remainingTokens > 100 { // Only add if we have meaningful space
+                        let maxChars = remainingTokens * 4
+                        let truncatedChunk = String(chunk.content.prefix(maxChars))
+                        ragContent += ragContent.isEmpty ? truncatedChunk : "\n\n---\n\n\(truncatedChunk)"
+                        ragContent += "\n\n[Additional content truncated due to token limits]"
+                    }
+                    break
+                }
+            }
+            
+            if !ragContent.isEmpty {
+                analysisTaskDescription += ragHeader + ragContent + ragFooter
+                print("📄 OrchestratorPattern: Added \(ragTokensUsed) tokens of RAG content to analysis prompt")
+            }
         }
         
         analysisTaskDescription += """
             
-            ## 7. Task to Analyze
+            ## \(context.ragChunks.isEmpty ? "7" : "8"). Task to Analyze
             
             **Task:** \(taskDescriptionForAnalysis)
             
             Now analyze this task and provide a complete breakdown following all the guidelines above. Be thorough, specific, and ensure web search tasks are properly structured with clear queries and follow-up analysis subtasks.
             """
         
-        let analysisTask = AgentTask(
+        // Final token check on analysis task description before creating task
+        let analysisTaskTokens = await tokenCounter.countTokens(analysisTaskDescription)
+        let maxAnalysisTaskTokens = 3500 // Reserve ~600 for system/tools/output
+        if analysisTaskTokens > maxAnalysisTaskTokens {
+            print("⚠️ OrchestratorPattern: Analysis task description exceeds budget (\(analysisTaskTokens) > \(maxAnalysisTaskTokens)), truncating...")
+            let maxChars = maxAnalysisTaskTokens * 4
+            analysisTaskDescription = String(analysisTaskDescription.prefix(maxChars)) + "\n\n[Analysis prompt truncated due to length]"
+        }
+        
+        var analysisTask = AgentTask(
             description: analysisTaskDescription,
             requiredCapabilities: [.generalReasoning]
         )
         
         // Track coordinator analysis tokens
-        let analysisPrompt = try await buildPrompt(from: analysisTask, context: context)
+        var analysisPrompt = try await buildPrompt(from: analysisTask, context: context)
+        
+        // Final safety check - ensure prompt doesn't exceed 4096 tokens
+        let finalAnalysisPromptTokens = await tokenCounter.countTokens(analysisPrompt)
+        if finalAnalysisPromptTokens > 4096 {
+            print("⚠️ OrchestratorPattern: Analysis prompt exceeds 4096 tokens (\(finalAnalysisPromptTokens)), truncating aggressively...")
+            let maxChars = 3500 * 4 // Reserve more aggressively for system/tools/output
+            analysisPrompt = String(analysisPrompt.prefix(maxChars)) + "\n\n[Prompt truncated due to context window limits]"
+            
+            // #region debug log
+            await DebugLogger.shared.log(
+                location: "OrchestratorPattern.swift:execute",
+                message: "Analysis prompt truncated due to context window",
+                hypothesisId: "B",
+                data: [
+                    "originalTokens": finalAnalysisPromptTokens,
+                    "truncatedTokens": await tokenCounter.countTokens(analysisPrompt),
+                    "ragChunksCount": context.ragChunks.count
+                ]
+            )
+            // #endregion
+            
+            // Update the task with truncated prompt
+            analysisTask = AgentTask(
+                description: analysisPrompt,
+                requiredCapabilities: [.generalReasoning]
+            )
+        }
+        
+        // Also check if this is a synthesis prompt and enforce stricter limits
+        let isSynthesisPrompt = analysisTask.description.contains("Synthesize") || analysisTask.description.contains("synthesis")
+        if isSynthesisPrompt {
+            // For synthesis, be more aggressive with token limits
+            let synthesisMaxTokens = 3000 // Reserve more for system/tools/output
+            if finalAnalysisPromptTokens > synthesisMaxTokens {
+                let maxChars = synthesisMaxTokens * 4
+                analysisPrompt = String(analysisPrompt.prefix(maxChars)) + "\n\n[Synthesis prompt truncated due to length]"
+                analysisTask = AgentTask(
+                    description: analysisPrompt,
+                    requiredCapabilities: [.generalReasoning]
+                )
+                print("⚠️ OrchestratorPattern: Synthesis prompt truncated from \(finalAnalysisPromptTokens) to ~\(synthesisMaxTokens) tokens")
+            }
+        }
+        
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "OrchestratorPattern.swift:execute",
+            message: "Coordinator analysis prompt built",
+            hypothesisId: "B,D",
+            data: [
+                "promptLength": analysisPrompt.count,
+                "promptTokens": await tokenCounter.countTokens(analysisPrompt),
+                "promptPreview": String(analysisPrompt.prefix(2000)),
+                "hasRAGChunksInPrompt": analysisPrompt.contains("Relevant Document Content") || analysisPrompt.contains("from attached files"),
+                "hasRAGChunksInAnalysisTask": analysisTaskDescription.contains("Relevant Document Content"),
+                "availableAgentsInPrompt": analysisPrompt.contains("Available Agents"),
+                "ragChunksCount": context.ragChunks.count,
+                "ragChunksInContext": context.ragChunks.map { String($0.content.prefix(100)) }
+            ]
+        )
+        // #endregion
+        
         await tokenTracker.trackPrompt(agentId: coordinator.id, prompt: analysisPrompt)
         await tokenTracker.trackContext(agentId: coordinator.id, context: context)
         
@@ -443,13 +577,28 @@ public struct OrchestratorPattern: OrchestrationPattern {
             )
         }
         
-        // Estimate single-agent tokens (assumes full conversation history)
-        let singleAgentEstimate = await estimateSingleAgentTokens(task: task, context: context)
+        // Estimate single-agent tokens (assumes full conversation history and full file content)
+        // Use updatedContext which has merged metadata from all agent results
+        let singleAgentEstimate = await estimateSingleAgentTokens(task: task, context: updatedContext)
         
-        // Calculate savings (now includes SVDB savings)
+        // Add file content savings to the tracker if available
+        // Check updatedContext (merged from all agent results) for file content savings
+        if let fileSavingsStr = updatedContext.metadata["tokens_file_content_saved"],
+           let fileSavings = Int(fileSavingsStr),
+           fileSavings > 0 {
+            // Track file content savings at coordinator level since it benefits overall orchestration
+            // The savings are already reflected in the actual token usage, so we adjust the estimate
+            await tokenTracker.trackSVDBSavings(
+                agentId: coordinator.id,
+                originalTokens: singleAgentEstimate,
+                optimizedTokens: singleAgentEstimate - fileSavings
+            )
+        }
+        
+        // Calculate savings (now includes SVDB savings and file content savings)
         let savingsPercentage = await tokenTracker.calculateSavings(singleAgentEstimate: singleAgentEstimate)
         
-        // Get total SVDB savings for logging
+        // Get total SVDB savings for logging (includes file content savings)
         let totalSVDBSavings = await tokenTracker.getTotalSVDBSavings()
         
         metricsStorage.metrics = DelegationMetrics(
@@ -509,7 +658,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         print("🎯 OrchestratorPattern: Executing subtask '\(subtask.description.prefix(50))...'")
         
         // Find matching agent
-        let agent = findAgent(for: subtask, in: agents)
+        let agent = await findAgent(for: subtask, in: agents)
         
         guard let selectedAgent = agent else {
             print("⚠️ OrchestratorPattern: No agent found for subtask, using coordinator")
@@ -517,12 +666,14 @@ public struct OrchestratorPattern: OrchestrationPattern {
             await DebugLogger.shared.log(
                 location: "OrchestratorPattern.swift:executeSubtask",
                 message: "No agent found, using coordinator",
-                hypothesisId: "F",
+                hypothesisId: "A",
                 data: [
                     "subtaskId": subtask.id.uuidString,
                     "subtaskDescription": String(subtask.description.prefix(100)),
                     "requiredCapabilities": Array(subtask.requiredCapabilities).map { $0.rawValue },
-                    "agentName": subtask.agentName ?? "none"
+                    "agentName": subtask.agentName ?? "none",
+                    "availableAgentNames": agents.map { $0.name },
+                    "availableAgentCapabilities": Dictionary(uniqueKeysWithValues: agents.map { ($0.name, Array($0.capabilities.map { $0.rawValue })) })
                 ]
             )
             let subtaskTask = AgentTask(description: subtask.description, requiredCapabilities: subtask.requiredCapabilities)
@@ -589,10 +740,38 @@ public struct OrchestratorPattern: OrchestrationPattern {
     }
     
     /// Find agent for a subtask
-    private func findAgent(for subtask: DecomposedSubtask, in agents: [any Agent]) -> (any Agent)? {
+    private func findAgent(for subtask: DecomposedSubtask, in agents: [any Agent]) async -> (any Agent)? {
+        // #region debug log
+        let agentNames = agents.map { $0.name }
+        let agentIds = agents.map { $0.id.uuidString }
+        await DebugLogger.shared.log(
+            location: "OrchestratorPattern.swift:findAgent",
+            message: "findAgent() called",
+            hypothesisId: "A,B,C",
+            data: [
+                "subtaskDescription": String(subtask.description.prefix(100)),
+                "subtaskAgentName": subtask.agentName ?? "none",
+                "requiredCapabilities": Array(subtask.requiredCapabilities).map { $0.rawValue },
+                "availableAgentCount": agents.count,
+                "availableAgentNames": agentNames,
+                "availableAgentIds": agentIds
+            ]
+        )
+        // #endregion
         // First try to match by name
         if let agentName = subtask.agentName {
             if let agent = agents.first(where: { $0.name == agentName }) {
+                // #region debug log
+                await DebugLogger.shared.log(
+                    location: "OrchestratorPattern.swift:findAgent",
+                    message: "Matched agent by name",
+                    hypothesisId: "A",
+                    data: [
+                        "matchedAgentName": agent.name,
+                        "matchedAgentId": agent.id.uuidString
+                    ]
+                )
+                // #endregion
                 return agent
             }
         }
@@ -603,15 +782,61 @@ public struct OrchestratorPattern: OrchestrationPattern {
                 !subtask.requiredCapabilities.isDisjoint(with: agent.capabilities)
             }
             
+            // #region debug log
+            let matchingNames = matchingAgents.map { $0.name }
+            await DebugLogger.shared.log(
+                location: "OrchestratorPattern.swift:findAgent",
+                message: "Matching by capabilities",
+                hypothesisId: "A,B",
+                data: [
+                    "matchingAgentCount": matchingAgents.count,
+                    "matchingAgentNames": matchingNames,
+                    "matchingAgentIds": matchingAgents.map { $0.id.uuidString }
+                ]
+            )
+            // #endregion
+            
             // Prefer agents that match all required capabilities
             if let perfectMatch = matchingAgents.first(where: { subtask.requiredCapabilities.isSubset(of: $0.capabilities) }) {
+                // #region debug log
+                await DebugLogger.shared.log(
+                    location: "OrchestratorPattern.swift:findAgent",
+                    message: "Found perfect match",
+                    hypothesisId: "A",
+                    data: [
+                        "matchedAgentName": perfectMatch.name,
+                        "matchedAgentId": perfectMatch.id.uuidString
+                    ]
+                )
+                // #endregion
                 return perfectMatch
             }
             
             // Otherwise return first match
-            return matchingAgents.first
+            if let firstMatch = matchingAgents.first {
+                // #region debug log
+                await DebugLogger.shared.log(
+                    location: "OrchestratorPattern.swift:findAgent",
+                    message: "Returning first capability match",
+                    hypothesisId: "A",
+                    data: [
+                        "matchedAgentName": firstMatch.name,
+                        "matchedAgentId": firstMatch.id.uuidString
+                    ]
+                )
+                // #endregion
+                return firstMatch
+            }
         }
         
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "OrchestratorPattern.swift:findAgent",
+            message: "No agent found",
+            hypothesisId: "A",
+            data: [:]
+        )
+        // #endregion
         return nil
     }
     
@@ -707,6 +932,9 @@ public struct OrchestratorPattern: OrchestrationPattern {
     private func buildPrompt(from task: AgentTask, context: AgentContext) async throws -> String {
         let tokenCounter = TokenCounter()
         
+        // Check if task description already contains RAG chunks (from analysis prompt)
+        let taskDescriptionHasRAG = task.description.contains("Relevant Document Content") || task.description.contains("from attached files")
+        
         // Calculate available tokens for the prompt (reserve for system, tools, output)
         let maxPromptTokens = 3500 // Reserve ~600 tokens for system/tools/output
         let systemAndToolTokens = 200 // Rough estimate
@@ -719,6 +947,34 @@ public struct OrchestratorPattern: OrchestrationPattern {
         // Truncate task description if needed
         var taskDescription = task.description
         let taskTokens = await tokenCounter.countTokens(taskDescription)
+        
+        // If task description already has RAG chunks, don't add conversation history or more RAG
+        // This is the analysis prompt case - it's already complete
+        if taskDescriptionHasRAG {
+            // For analysis prompts, the task description IS the prompt (it already includes everything)
+            // Just ensure it fits within token limits
+            // Check if this is a synthesis prompt - use stricter limits
+            let isSynthesis = task.description.contains("Synthesize") || task.description.contains("synthesis")
+            let maxTokensForPrompt = isSynthesis ? 3000 : availableForContent // Stricter limit for synthesis
+            
+            if taskTokens > maxTokensForPrompt {
+                let maxChars = maxTokensForPrompt * 4
+                taskDescription = String(taskDescription.prefix(maxChars)) + "\n\n[Prompt truncated due to length]"
+                print("⚠️ OrchestratorPattern: Truncated \(isSynthesis ? "synthesis" : "analysis") prompt from \(taskTokens) to ~\(maxTokensForPrompt) tokens")
+            }
+            
+            // Final safety check - ensure it doesn't exceed 4096 tokens
+            let finalTokens = await tokenCounter.countTokens(taskDescription)
+            if finalTokens > 4096 {
+                let maxChars = 3500 * 4 // Reserve aggressively
+                taskDescription = String(taskDescription.prefix(maxChars)) + "\n\n[Prompt truncated due to context window limits]"
+                print("⚠️ OrchestratorPattern: Final truncation - reduced to ~3500 tokens to fit 4096 limit")
+            }
+            
+            return taskDescription
+        }
+        
+        // For regular prompts (not analysis), add conversation history and RAG chunks
         let availableForTask = max(100, availableForContent - historyTokens)
         
         if taskTokens > availableForTask {
@@ -743,6 +999,105 @@ public struct OrchestratorPattern: OrchestrationPattern {
             prompt += "Available Files: \(context.fileReferences.joined(separator: ", "))\n\n"
         }
         
+        // Include RAG chunks if available, with token-aware truncation
+        if !context.ragChunks.isEmpty {
+            // Calculate remaining tokens after task description and conversation history
+            let currentPromptTokens = await tokenCounter.countTokens(prompt)
+            let remainingTokens = max(0, availableForContent - currentPromptTokens)
+            
+            if remainingTokens > 200 { // Only add RAG chunks if we have meaningful space
+                let ragHeader = "Relevant Document Content (from attached files):\n"
+                let ragHeaderTokens = await tokenCounter.countTokens(ragHeader)
+                let availableForRAG = max(0, remainingTokens - ragHeaderTokens - 50) // Reserve 50 for footer
+                
+                var ragContent = ""
+                var ragTokensUsed = 0
+                
+                for (index, chunk) in context.ragChunks.prefix(3).enumerated() {
+                    let chunkText = ragContent.isEmpty ? "\n[Chunk \(index + 1)]\n\(chunk.content)\n" : "\n[Chunk \(index + 1)]\n\(chunk.content)\n"
+                    let chunkTokens = await tokenCounter.countTokens(chunkText)
+                    
+                    if ragTokensUsed + chunkTokens <= availableForRAG {
+                        ragContent += chunkText
+                        ragTokensUsed += chunkTokens
+                    } else {
+                        // Truncate this chunk to fit remaining budget
+                        let remainingRAGTokens = max(0, availableForRAG - ragTokensUsed)
+                        if remainingRAGTokens > 50 {
+                            let maxChars = remainingRAGTokens * 4
+                            let truncatedChunk = String(chunk.content.prefix(maxChars))
+                            ragContent += "\n[Chunk \(index + 1)]\n\(truncatedChunk)\n[Truncated...]\n"
+                        }
+                        break
+                    }
+                }
+                
+                if !ragContent.isEmpty {
+                    prompt += ragHeader + ragContent + "\n"
+                    
+                    // #region debug log
+                    await DebugLogger.shared.log(
+                        location: "OrchestratorPattern.swift:buildPrompt",
+                        message: "Added RAG chunks to prompt",
+                        hypothesisId: "B",
+                        data: [
+                            "chunksAdded": ragContent.components(separatedBy: "[Chunk").count - 1,
+                            "ragTokensUsed": ragTokensUsed,
+                            "availableForRAG": availableForRAG,
+                            "chunkPreviews": context.ragChunks.prefix(3).map { String($0.content.prefix(200)) }
+                        ]
+                    )
+                    // #endregion
+                } else {
+                    // #region debug log
+                    await DebugLogger.shared.log(
+                        location: "OrchestratorPattern.swift:buildPrompt",
+                        message: "RAG chunks skipped due to token limits",
+                        hypothesisId: "B",
+                        data: [
+                            "ragChunksCount": context.ragChunks.count,
+                            "availableForRAG": availableForRAG,
+                            "remainingTokens": remainingTokens
+                        ]
+                    )
+                    // #endregion
+                }
+            } else {
+                // #region debug log
+                await DebugLogger.shared.log(
+                    location: "OrchestratorPattern.swift:buildPrompt",
+                    message: "RAG chunks skipped - insufficient token budget",
+                    hypothesisId: "B",
+                    data: [
+                        "ragChunksCount": context.ragChunks.count,
+                        "remainingTokens": remainingTokens,
+                        "currentPromptTokens": currentPromptTokens
+                    ]
+                )
+                // #endregion
+            }
+        } else {
+            // #region debug log
+            await DebugLogger.shared.log(
+                location: "OrchestratorPattern.swift:buildPrompt",
+                message: "No RAG chunks to add to prompt",
+                hypothesisId: "B",
+                data: [
+                    "ragChunksCount": context.ragChunks.count,
+                    "fileReferencesCount": context.fileReferences.count
+                ]
+            )
+            // #endregion
+        }
+        
+        // Final token check - truncate entire prompt if still too long
+        let finalPromptTokens = await tokenCounter.countTokens(prompt)
+        if finalPromptTokens > availableForContent {
+            print("⚠️ OrchestratorPattern: Prompt still exceeds budget (\(finalPromptTokens) > \(availableForContent)), truncating...")
+            let maxChars = availableForContent * 4
+            prompt = String(prompt.prefix(maxChars)) + "\n\n[Prompt truncated due to length]"
+        }
+        
         return prompt
     }
     
@@ -765,8 +1120,23 @@ public struct OrchestratorPattern: OrchestrationPattern {
             contextTokens = await tokenCounter.countTokens(context.conversationHistory)
         }
         
-        let fileRefTokens = context.fileReferences.joined(separator: ", ").count / 4 // Rough estimate
-        let baseInputTokens = taskTokens + contextTokens + fileRefTokens
+        // Calculate file content tokens
+        // If we have file content savings metadata, use original file content tokens
+        // Otherwise, estimate based on file references
+        let fileContentTokens: Int
+        if let originalFileTokensStr = context.metadata["tokens_file_content_original"],
+           let originalFileTokens = Int(originalFileTokensStr) {
+            // Use original file content tokens (before RAG optimization) for accurate comparison
+            fileContentTokens = originalFileTokens
+        } else {
+            // Estimate file content tokens based on file references
+            // For large PDFs, estimate ~100k tokens per file (conservative estimate)
+            // For smaller files, estimate based on file path length (rough heuristic)
+            fileContentTokens = context.fileReferences.count * 100_000 // Conservative estimate for large files
+        }
+        
+        let fileRefTokens = context.fileReferences.joined(separator: ", ").count / 4 // Just file paths
+        let baseInputTokens = taskTokens + contextTokens + fileRefTokens + fileContentTokens
         
         // Estimate response tokens: typical LLM responses are 1.5-3x input tokens
         // For complex tasks requiring research/analysis, use higher multiplier
@@ -1006,13 +1376,25 @@ public struct OrchestratorPattern: OrchestrationPattern {
             )
         }
         
-        // Estimate single-agent tokens (assumes full conversation history)
+        // Estimate single-agent tokens (assumes full conversation history and full file content)
         let singleAgentEstimate = await estimateSingleAgentTokens(task: task, context: context)
         
-        // Calculate savings (now includes SVDB savings)
+        // Add file content savings to the tracker if available
+        if let fileSavingsStr = context.metadata["tokens_file_content_saved"],
+           let fileSavings = Int(fileSavingsStr),
+           fileSavings > 0 {
+            // Track file content savings at coordinator level
+            await tokenTracker.trackSVDBSavings(
+                agentId: coordinator.id,
+                originalTokens: singleAgentEstimate,
+                optimizedTokens: singleAgentEstimate - fileSavings
+            )
+        }
+        
+        // Calculate savings (now includes SVDB savings and file content savings)
         let savingsPercentage = await tokenTracker.calculateSavings(singleAgentEstimate: singleAgentEstimate)
         
-        // Get total SVDB savings for logging
+        // Get total SVDB savings for logging (includes file content savings)
         let totalSVDBSavings = await tokenTracker.getTotalSVDBSavings()
         
         // Store metrics
