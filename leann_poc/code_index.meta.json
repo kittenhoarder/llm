@@ -1,0 +1,22 @@
+{
+  "version": "1.0",
+  "backend_name": "hnsw",
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "dimensions": 384,
+  "backend_kwargs": {
+    "is_recompute": false,
+    "is_compact": false
+  },
+  "embedding_mode": "sentence-transformers",
+  "passage_sources": [
+    {
+      "type": "jsonl",
+      "path": "code_index.passages.jsonl",
+      "index_path": "code_index.passages.idx",
+      "path_relative": "code_index.passages.jsonl",
+      "index_path_relative": "code_index.passages.idx"
+    }
+  ],
+  "is_compact": false,
+  "is_pruned": false
+}

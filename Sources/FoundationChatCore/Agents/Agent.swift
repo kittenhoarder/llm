@@ -45,21 +45,21 @@ public class BaseAgent: Agent, @unchecked Sendable {
         get async {
             if _modelService == nil {
                 let agentName = self.name
-                print("🤖 BaseAgent '\(agentName)' creating ModelService lazily...")
+                Log.debug("🤖 BaseAgent '\(agentName)' creating ModelService lazily...")
                 
                 // Create ModelService off the main thread to avoid blocking
                 _modelService = await Task.detached(priority: .userInitiated) {
-                    print("🤖 BaseAgent '\(agentName)' Creating ModelService in detached task...")
+                    Log.debug("🤖 BaseAgent '\(agentName)' Creating ModelService in detached task...")
                     let service = ModelService()
-                    print("✅ BaseAgent '\(agentName)' ModelService created in detached task")
+                    Log.debug("✅ BaseAgent '\(agentName)' ModelService created in detached task")
                     return service
                 }.value
                 
-                print("✅ BaseAgent '\(agentName)' ModelService created and assigned")
+                Log.debug("✅ BaseAgent '\(agentName)' ModelService created and assigned")
                 
                 // Update tools after creating service
                 if !tools.isEmpty {
-                    print("🤖 BaseAgent '\(agentName)' updating tools...")
+                    Log.debug("🤖 BaseAgent '\(agentName)' updating tools...")
                     
                     // Debug logging
                     await DebugLogger.shared.log(
@@ -74,7 +74,7 @@ public class BaseAgent: Agent, @unchecked Sendable {
                     )
                     
                     await _modelService!.updateTools(tools)
-                    print("✅ BaseAgent '\(agentName)' tools updated")
+                    Log.debug("✅ BaseAgent '\(agentName)' tools updated")
                 }
             }
             return _modelService!
@@ -98,13 +98,13 @@ public class BaseAgent: Agent, @unchecked Sendable {
         capabilities: Set<AgentCapability>,
         tools: [any Tool] = []
     ) {
-        print("🤖 BaseAgent '\(name)' init starting (no ModelService created yet)...")
+        Log.debug("🤖 BaseAgent '\(name)' init starting (no ModelService created yet)...")
         self.id = id
         self.name = name
         self.description = description
         self.capabilities = capabilities
         self.tools = tools
-        print("✅ BaseAgent '\(name)' init complete (ModelService will be created lazily)")
+        Log.debug("✅ BaseAgent '\(name)' init complete (ModelService will be created lazily)")
     }
     
     /// Update the tools available to this agent
@@ -123,19 +123,19 @@ public class BaseAgent: Agent, @unchecked Sendable {
     ///   - context: Shared context
     /// - Returns: Result of processing
     public func process(task: AgentTask, context: AgentContext) async throws -> AgentResult {
-        print("🤖 BaseAgent '\(name)' process() called for task: \(task.description.prefix(50))...")
+        Log.debug("🤖 BaseAgent '\(name)' process() called for task: \(task.description.prefix(50))...")
         
         // Build a prompt that includes context (now async)
-        print("🤖 BaseAgent '\(name)' building prompt...")
+        Log.debug("🤖 BaseAgent '\(name)' building prompt...")
         let prompt = try await buildPrompt(from: task, context: context)
-        print("✅ BaseAgent '\(name)' prompt built")
+        Log.debug("✅ BaseAgent '\(name)' prompt built")
         
         // Get response from model (lazy ModelService creation)
-        print("🤖 BaseAgent '\(name)' accessing modelService (may create it)...")
+        Log.debug("🤖 BaseAgent '\(name)' accessing modelService (may create it)...")
         let service = await modelService
-        print("✅ BaseAgent '\(name)' modelService obtained, calling respond()...")
+        Log.debug("✅ BaseAgent '\(name)' modelService obtained, calling respond()...")
         let response = try await service.respond(to: prompt)
-        print("✅ BaseAgent '\(name)' got response")
+        Log.debug("✅ BaseAgent '\(name)' got response")
         
         // Create result
         return AgentResult(
@@ -187,7 +187,7 @@ public class BaseAgent: Agent, @unchecked Sendable {
             let maxChars = availableForTask * 4 // Rough char-to-token conversion
             let truncated = String(taskDescription.prefix(maxChars))
             taskDescription = truncated + "\n\n[Message truncated due to length. Full content available in conversation history.]"
-            print("⚠️ Agent '\(name)': Truncated task description from \(taskTokens) to ~\(availableForTask) tokens")
+            Log.warn("⚠️ Agent '\(name)': Truncated task description from \(taskTokens) to ~\(availableForTask) tokens")
         }
         
         var prompt = "Task: \(taskDescription)\n\n"
@@ -206,11 +206,23 @@ public class BaseAgent: Agent, @unchecked Sendable {
         }
         
         if !context.toolResults.isEmpty {
-            prompt += "Previous Results:\n"
+            prompt += "Previous Tool Results:\n"
+            var resultsText = ""
             for (key, value) in context.toolResults {
-                prompt += "- \(key): \(value)\n"
+                // Truncate individual tool results to avoid context blowup
+                let maxResultChars = 1500
+                let truncatedValue = value.count > maxResultChars 
+                    ? String(value.prefix(maxResultChars)) + "\n... (result truncated)"
+                    : value
+                resultsText += "- \(key): \(truncatedValue)\n"
+                
+                // cap the total results text to 3000 chars
+                if resultsText.count > 3000 {
+                    resultsText += "... (more results omitted to save context space)\n"
+                    break
+                }
             }
-            prompt += "\n"
+            prompt += resultsText + "\n"
         }
         
         prompt += "Please process this task and provide a response."

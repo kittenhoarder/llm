@@ -38,7 +38,6 @@ public actor WebSearchTool {
     public enum SearchEngine: String, Sendable {
         case google = "Google"
         case bing = "Bing"
-        case duckduckgo = "DuckDuckGo"
     }
     
     /// Maximum number of results to return
@@ -57,7 +56,7 @@ public actor WebSearchTool {
         maxResults: Int = 5,
         maxContentLength: Int = 500,
         timeout: TimeInterval = 15.0,
-        searchEngine: SearchEngine = .duckduckgo
+        searchEngine: SearchEngine = .google
     ) {
         self.maxResults = maxResults
         self.maxContentLength = maxContentLength
@@ -87,8 +86,6 @@ public actor WebSearchTool {
             urlString = "https://www.google.com/search?q=\(encodedQuery)"
         case .bing:
             urlString = "https://www.bing.com/search?q=\(encodedQuery)"
-        case .duckduckgo:
-            urlString = "https://html.duckduckgo.com/html/?q=\(encodedQuery)"
         }
         
         guard let url = URL(string: urlString) else {
@@ -251,23 +248,6 @@ private class WebViewDelegate: NSObject, WKNavigationDelegate {
                 return results;
             }
             
-            // Try DuckDuckGo results
-            var ddgResults = document.querySelectorAll('div.result');
-            if (ddgResults.length > 0) {
-                ddgResults.forEach(function(result, index) {
-                    if (index >= \(maxResults)) return;
-                    var titleEl = result.querySelector('a.result__a');
-                    var snippetEl = result.querySelector('a.result__snippet');
-                    if (titleEl) {
-                        results.push({
-                            title: titleEl.textContent.trim(),
-                            url: titleEl.href,
-                            snippet: snippetEl ? snippetEl.textContent.trim() : ''
-                        });
-                    }
-                });
-                return results;
-            }
             
             return results;
         })();

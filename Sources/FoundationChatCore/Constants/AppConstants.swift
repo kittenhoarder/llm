@@ -55,11 +55,19 @@ public enum AppConstants {
 /// UserDefaults key constants
 @available(macOS 26.0, iOS 26.0, *)
 public enum UserDefaultsKey {
+    public static let fontSizeAdjustment = "fontSizeAdjustment"
+    public static let preferredColorScheme = "preferredColorScheme"
+    public static let useContextualConversations = "useContextualConversations"
+    public static let serpapiApiKey = "serpapiApiKey"
+    public static let enabledAgentNames = "enabledAgentNames"
     public static let ragChunkSize = "ragChunkSize"
     public static let ragTopK = "ragTopK"
     public static let enabledAgentIds = "enabledAgentIds"
     public static let useCoordinator = "useCoordinator"
+    public static let smartDelegation = "smartDelegation"
+    public static let useRAG = "useRAG"
     public static let useSVDBForContextOptimization = "useSVDBForContextOptimization"
     public static let svdbContextTopK = "svdbContextTopK"
     public static let svdbContextRecentMessages = "svdbContextRecentMessages"
+    public static let leannRootPath = "leannRootPath"
 }

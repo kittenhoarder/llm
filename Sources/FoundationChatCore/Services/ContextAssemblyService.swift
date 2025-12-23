@@ -56,9 +56,9 @@ public actor ContextAssemblyService {
                     context.metadata["tokens_svdb_saved_context"] = String(originalTokens - optimizedTokens)
                 }
 
-                print("📊 AgentService: SVDB optimization - Original: \(originalTokens) tokens, Optimized: \(optimizedTokens) tokens")
+                Log.debug("📊 AgentService: SVDB optimization - Original: \(originalTokens) tokens, Optimized: \(optimizedTokens) tokens")
             } catch {
-                print("⚠️ AgentService: SVDB optimization failed, using full history: \(error.localizedDescription)")
+                Log.warn("⚠️ AgentService: SVDB optimization failed, using full history: \(error.localizedDescription)")
                 context.conversationHistory = conversation.messages
             }
         } else {
@@ -68,8 +68,8 @@ public actor ContextAssemblyService {
         if !context.fileReferences.isEmpty, let query = currentMessage {
             do {
                 let ragService = RAGService.shared
-                let topK = UserDefaults.standard.integer(forKey: "ragTopK") > 0
-                    ? UserDefaults.standard.integer(forKey: "ragTopK")
+                let topK = UserDefaults.standard.integer(forKey: UserDefaultsKey.ragTopK) > 0
+                    ? UserDefaults.standard.integer(forKey: UserDefaultsKey.ragTopK)
                     : 5
 
                 var enhancedQuery = query
@@ -116,7 +116,7 @@ public actor ContextAssemblyService {
                     hypothesisId: "B",
                     data: ["error": error.localizedDescription]
                 )
-                print("⚠️ AgentService: RAG retrieval failed: \(error.localizedDescription)")
+                Log.warn("⚠️ AgentService: RAG retrieval failed: \(error.localizedDescription)")
             }
         } else {
             await DebugLogger.shared.log(

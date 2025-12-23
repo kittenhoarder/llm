@@ -17,16 +17,19 @@ struct DelegationDecision {
 struct DelegationDecider {
     func forcedDecision(
         taskDescription: String,
-        hasFiles: Bool
+        hasFiles: Bool,
+        availableCapabilities: Set<AgentCapability>
     ) -> DelegationDecision? {
         let normalized = taskDescription.lowercased()
+
+        let hasWebSearch = availableCapabilities.contains(.webSearch)
 
         let explicitSearchTriggers = [
             "search the web", "search web", "web search", "look up online",
             "search for", "look up", "find online"
         ]
 
-        if explicitSearchTriggers.contains(where: { normalized.contains($0) }) {
+        if hasWebSearch && explicitSearchTriggers.contains(where: { normalized.contains($0) }) {
             return DelegationDecision(
                 shouldDelegate: true,
                 reason: "Explicit web search request detected."
@@ -34,6 +37,10 @@ struct DelegationDecider {
         }
 
         if hasFiles {
+            return nil
+        }
+
+        if !hasWebSearch {
             return nil
         }
 

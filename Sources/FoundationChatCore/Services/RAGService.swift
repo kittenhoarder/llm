@@ -59,7 +59,7 @@ public actor RAGService {
         self.storageDirectory = ragDir
         self.svdb = SVDB.shared
         
-        print("🔍 RAGService initialized. Storage: \(ragDir.path)")
+        Log.debug("🔍 RAGService initialized. Storage: \(ragDir.path)")
     }
     
     /// Check if a file is a PDF based on extension or MIME type
@@ -111,19 +111,19 @@ public actor RAGService {
                 let pdfContent = try await PDFTextExtractor.extractText(from: fileURL)
                 // Format with metadata for better context
                 fileContent = pdfContent.formatted()
-                print("📄 RAGService: Extracted text from PDF (\(pdfContent.metadata.pageCount) pages): \(attachment.originalName)")
+                Log.debug("📄 RAGService: Extracted text from PDF (\(pdfContent.metadata.pageCount) pages): \(attachment.originalName)")
             } catch PDFExtractionError.passwordProtected {
-                print("⚠️ RAGService: PDF is password-protected, skipping indexing: \(attachment.originalName)")
+                Log.warn("⚠️ RAGService: PDF is password-protected, skipping indexing: \(attachment.originalName)")
                 throw RAGError.unsupportedFileType("Password-protected PDF: \(attachment.originalName)")
             } catch {
-                print("⚠️ RAGService: Failed to extract text from PDF: \(attachment.originalName), error: \(error.localizedDescription)")
+                Log.warn("⚠️ RAGService: Failed to extract text from PDF: \(attachment.originalName), error: \(error.localizedDescription)")
                 throw RAGError.unsupportedFileType("PDF extraction failed: \(attachment.originalName)")
             }
         } else {
             // Read file content as text for non-PDF files
             guard let textContent = try? String(contentsOf: fileURL, encoding: .utf8) else {
                 // Try other encodings or skip non-text files
-                print("⚠️ RAGService: Could not read file as UTF-8 text: \(attachment.originalName)")
+                Log.warn("⚠️ RAGService: Could not read file as UTF-8 text: \(attachment.originalName)")
                 throw RAGError.unsupportedFileType(attachment.originalName)
             }
             fileContent = textContent
@@ -131,7 +131,7 @@ public actor RAGService {
         
         // Skip empty files
         guard !fileContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            print("⚠️ RAGService: File is empty: \(attachment.originalName)")
+            Log.warn("⚠️ RAGService: File is empty: \(attachment.originalName)")
             return
         }
         
@@ -142,7 +142,7 @@ public actor RAGService {
             throw RAGError.chunkingFailed("No chunks created from file")
         }
         
-        print("📄 RAGService: Indexing \(chunks.count) chunks from \(attachment.originalName)")
+        Log.debug("📄 RAGService: Indexing \(chunks.count) chunks from \(attachment.originalName)")
         
         // Generate embeddings for all chunks
         let embeddings = try await embeddingService.embedBatch(texts: chunks)
@@ -215,7 +215,7 @@ public actor RAGService {
             )
         }
         
-        print("✅ RAGService: Successfully indexed \(chunks.count) chunks from \(attachment.originalName)")
+        Log.debug("✅ RAGService: Successfully indexed \(chunks.count) chunks from \(attachment.originalName)")
     }
     
     /// Search for relevant chunks based on query
@@ -414,7 +414,7 @@ public actor RAGService {
             collection.removeDocument(byId: documentId)
         }
         
-        print("🗑️ RAGService: Deleted \(documentsToRemove.count) chunks for file \(attachmentId.uuidString)")
+        Log.debug("🗑️ RAGService: Deleted \(documentsToRemove.count) chunks for file \(attachmentId.uuidString)")
     }
     
     /// Delete all indexes for a conversation
@@ -436,12 +436,12 @@ public actor RAGService {
         if let collection = svdb.getCollection(collectionName) {
             // Clear all documents from the collection
             collection.clear()
-            print("🗑️ RAGService: Cleared all documents from collection \(collectionName)")
+            Log.debug("🗑️ RAGService: Cleared all documents from collection \(collectionName)")
         }
         
         // Release the collection from SVDB
         svdb.releaseCollection(collectionName)
-        print("🗑️ RAGService: Released collection \(collectionName)")
+        Log.debug("🗑️ RAGService: Released collection \(collectionName)")
     }
     
     /// Clear all SVDB data (all collections and storage)
@@ -453,7 +453,7 @@ public actor RAGService {
             try fileManager.removeItem(at: storageDirectory)
             // Recreate empty directory
             try fileManager.createDirectory(at: storageDirectory, withIntermediateDirectories: true)
-            print("🗑️ RAGService: Cleared all SVDB storage data")
+            Log.debug("🗑️ RAGService: Cleared all SVDB storage data")
         }
     }
     
@@ -465,7 +465,7 @@ public actor RAGService {
     public func indexMessage(_ message: Message, conversationId: UUID) async throws {
         // Skip empty messages
         guard !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            print("⚠️ RAGService: Skipping empty message \(message.id)")
+            Log.warn("⚠️ RAGService: Skipping empty message \(message.id)")
             return
         }
         
@@ -526,7 +526,7 @@ public actor RAGService {
                 )
             }
             
-            print("✅ RAGService: Successfully indexed message \(message.id) as \(chunks.count) chunks")
+            Log.debug("✅ RAGService: Successfully indexed message \(message.id) as \(chunks.count) chunks")
         } else {
             // Message fits in one chunk, index as-is
             // Embed the full message text (including role) for better semantic matching
@@ -544,7 +544,7 @@ public actor RAGService {
                 embedding: doubleEmbedding
             )
             
-            print("✅ RAGService: Successfully indexed message \(message.id)")
+            Log.debug("✅ RAGService: Successfully indexed message \(message.id)")
         }
     }
     
@@ -555,11 +555,11 @@ public actor RAGService {
     /// - Throws: RAGError if indexing fails
     public func indexConversationHistory(_ messages: [Message], conversationId: UUID) async throws {
         guard !messages.isEmpty else {
-            print("ℹ️ RAGService: No messages to index for conversation \(conversationId)")
+            Log.debug("ℹ️ RAGService: No messages to index for conversation \(conversationId)")
             return
         }
         
-        print("📝 RAGService: Indexing \(messages.count) messages for conversation \(conversationId)")
+        Log.debug("📝 RAGService: Indexing \(messages.count) messages for conversation \(conversationId)")
         
         var indexedCount = 0
         var errorCount = 0
@@ -570,12 +570,12 @@ public actor RAGService {
                 indexedCount += 1
             } catch {
                 errorCount += 1
-                print("⚠️ RAGService: Failed to index message \(message.id): \(error.localizedDescription)")
+                Log.warn("⚠️ RAGService: Failed to index message \(message.id): \(error.localizedDescription)")
                 // Continue with other messages even if one fails
             }
         }
         
-        print("✅ RAGService: Indexed \(indexedCount)/\(messages.count) messages (\(errorCount) errors)")
+        Log.debug("✅ RAGService: Indexed \(indexedCount)/\(messages.count) messages (\(errorCount) errors)")
     }
     
     /// Search for relevant messages based on query
@@ -696,7 +696,7 @@ public actor RAGService {
     /// - Parameter conversationService: The conversation service to load conversations from
     /// - Returns: Migration result with counts of indexed conversations and messages
     public func indexExistingConversations(conversationService: ConversationService) async throws -> (conversationsIndexed: Int, messagesIndexed: Int, errors: Int) {
-        print("🔄 RAGService: Starting migration to index existing conversations...")
+        Log.debug("🔄 RAGService: Starting migration to index existing conversations...")
         
         var conversationsIndexed = 0
         var messagesIndexed = 0
@@ -704,7 +704,7 @@ public actor RAGService {
         
         do {
             let conversations = try conversationService.loadConversations()
-            print("📝 RAGService: Found \(conversations.count) conversations to index")
+            Log.debug("📝 RAGService: Found \(conversations.count) conversations to index")
             
             for conversation in conversations {
                 guard !conversation.isEphemeral else {
@@ -719,16 +719,16 @@ public actor RAGService {
                     try await indexConversationHistory(conversation.messages, conversationId: conversation.id)
                     conversationsIndexed += 1
                     messagesIndexed += conversation.messages.count
-                    print("✅ RAGService: Indexed conversation \(conversation.id) (\(conversation.messages.count) messages)")
+                    Log.debug("✅ RAGService: Indexed conversation \(conversation.id) (\(conversation.messages.count) messages)")
                 } catch {
                     errors += 1
-                    print("⚠️ RAGService: Failed to index conversation \(conversation.id): \(error.localizedDescription)")
+                    Log.warn("⚠️ RAGService: Failed to index conversation \(conversation.id): \(error.localizedDescription)")
                 }
             }
             
-            print("✅ RAGService: Migration complete - \(conversationsIndexed) conversations, \(messagesIndexed) messages indexed, \(errors) errors")
+            Log.debug("✅ RAGService: Migration complete - \(conversationsIndexed) conversations, \(messagesIndexed) messages indexed, \(errors) errors")
         } catch {
-            print("❌ RAGService: Migration failed: \(error.localizedDescription)")
+            Log.error("❌ RAGService: Migration failed: \(error.localizedDescription)")
             throw RAGError.indexingFailed("Failed to load conversations: \(error.localizedDescription)")
         }
         

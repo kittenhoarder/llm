@@ -19,28 +19,6 @@ public struct ToolUsageInference {
         var inferredTools: [String] = []
         let contentLower = content.lowercased()
         
-        // Check for DuckDuckGo usage
-        if availableTools.contains("duckduckgo_search") {
-            let duckduckgoIndicators = [
-                "duckduckgo",
-                "duckduckgo instant answers",
-                "duckduckgo api",
-                "couldn't find any information",
-                "couldn't find any current information",
-                "couldn't find any online information",
-                "does not have an instant answer",
-                "doesn't have an instant answer",
-                "instant answers api"
-            ]
-            
-            for indicator in duckduckgoIndicators {
-                if contentLower.contains(indicator) {
-                    inferredTools.append("duckduckgo_search")
-                    break
-                }
-            }
-        }
-        
         // Add more tool inference logic here as needed
         
         return inferredTools

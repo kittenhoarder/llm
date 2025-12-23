@@ -34,7 +34,7 @@ public class ChatViewModel: ObservableObject {
     private var agentService: AgentService {
         return AgentService.shared
     }
-    @AppStorage("useContextualConversations") private var useContextualConversations: Bool = true
+    @AppStorage(UserDefaultsKey.useContextualConversations) private var useContextualConversations: Bool = true
     
     // Track progress subscriptions per conversation
     private var progressTrackingTasks: [UUID: Task<Void, Never>] = [:]
@@ -42,15 +42,15 @@ public class ChatViewModel: ObservableObject {
     /// Get or create ModelService instance (async to avoid blocking)
     private func getModelService() async -> ModelService {
         if modelService == nil {
-            print("📱 Creating ModelService in detached task...")
+            Log.debug("📱 Creating ModelService in detached task...")
             // Create ModelService off the main thread to avoid blocking
             modelService = await Task.detached(priority: .userInitiated) {
-                print("📱 ModelService creation starting in detached task...")
+                Log.debug("📱 ModelService creation starting in detached task...")
                 let service = ModelService()
-                print("✅ ModelService created in detached task")
+                Log.debug("✅ ModelService created in detached task")
                 return service
             }.value
-            print("✅ ModelService created and assigned")
+            Log.debug("✅ ModelService created and assigned")
         }
         return modelService!
     }
@@ -65,60 +65,60 @@ public class ChatViewModel: ObservableObject {
     }
     
     init() {
-        print("📱 ========================================")
-        print("📱 ChatViewModel init() CALLED")
-        print("📱 Thread: \(Thread.isMainThread ? "Main" : "Background")")
-        print("📱 ========================================")
+        Log.debug("📱 ========================================")
+        Log.debug("📱 ChatViewModel init() CALLED")
+        Log.debug("📱 Thread: \(Thread.isMainThread ? "Main" : "Background")")
+        Log.debug("📱 ========================================")
         
         // Initialize conversation service - this might be blocking
         var service: ConversationService?
         do {
-            print("📱 Step 1: About to create ConversationService...")
-            print("📱 Step 1.1: Calling ConversationService()...")
+            Log.debug("📱 Step 1: About to create ConversationService...")
+            Log.debug("📱 Step 1.1: Calling ConversationService()...")
             service = try ConversationService()
-            print("✅ Step 3: ConversationService() returned successfully")
+            Log.debug("✅ Step 3: ConversationService() returned successfully")
         } catch {
-            print("❌ Failed to initialize ConversationService: \(error)")
-            print("   Error details: \(error.localizedDescription)")
+            Log.debug("❌ Failed to initialize ConversationService: \(error)")
+            Log.debug("   Error details: \(error.localizedDescription)")
             if let nsError = error as NSError? {
-                print("   Domain: \(nsError.domain), Code: \(nsError.code)")
-                print("   UserInfo: \(nsError.userInfo)")
+                Log.debug("   Domain: \(nsError.domain), Code: \(nsError.code)")
+                Log.debug("   UserInfo: \(nsError.userInfo)")
             }
             
             // Try with a temp path as fallback
             do {
-                print("📱 Trying temp path fallback...")
+                Log.debug("📱 Trying temp path fallback...")
                 let tempDir = FileManager.default.temporaryDirectory
                 let tempDB = tempDir.appendingPathComponent("foundationchat_temp.db")
                 service = try ConversationService(dbPath: tempDB.path)
-                print("✅ ConversationService created with temp path")
+                Log.debug("✅ ConversationService created with temp path")
             } catch let fallbackError {
-                print("❌ Failed even with temp path: \(fallbackError)")
-                print("   Fallback error: \(fallbackError.localizedDescription)")
+                Log.debug("❌ Failed even with temp path: \(fallbackError)")
+                Log.debug("   Fallback error: \(fallbackError.localizedDescription)")
                 // Use fatalError to see the actual error
                 fatalError("Failed to initialize ConversationService: \(error). Fallback also failed: \(fallbackError)")
             }
         }
         
-        print("📱 Step 4: Checking if service is nil...")
+        Log.debug("📱 Step 4: Checking if service is nil...")
         guard let finalService = service else {
-            print("❌ Service is nil!")
+            Log.debug("❌ Service is nil!")
             fatalError("ConversationService is nil after initialization")
         }
         
-        print("📱 Step 5: Assigning conversationService...")
+        Log.debug("📱 Step 5: Assigning conversationService...")
         self.conversationService = finalService
-        print("✅ Step 6: ChatViewModel init complete")
-        print("📱 Step 7: Starting async loadConversations task...")
+        Log.debug("✅ Step 6: ChatViewModel init complete")
+        Log.debug("📱 Step 7: Starting async loadConversations task...")
         
         // Load conversations asynchronously to avoid blocking UI
         Task { @MainActor in
-            print("📱 Step 8: Inside loadConversations task...")
+            Log.debug("📱 Step 8: Inside loadConversations task...")
             await loadConversations()
-            print("✅ Step 9: Conversations loaded")
+            Log.debug("✅ Step 9: Conversations loaded")
         }
         
-        print("📱 Step 10: ChatViewModel init returning...")
+        Log.debug("📱 Step 10: ChatViewModel init returning...")
     }
     
     // MARK: - Conversation Loading
@@ -135,10 +135,10 @@ public class ChatViewModel: ObservableObject {
                         orchestrationStateByMessage[messageId] = state
                     }
                     if !states.isEmpty {
-                        print("📊 Loaded \(states.count) orchestration states for conversation \(conversation.id)")
+                        Log.debug("📊 Loaded \(states.count) orchestration states for conversation \(conversation.id)")
                     }
                 } catch {
-                    print("⚠️ Failed to load orchestration states for conversation \(conversation.id): \(error)")
+                    Log.debug("⚠️ Failed to load orchestration states for conversation \(conversation.id): \(error)")
                 }
             }
             
@@ -146,7 +146,7 @@ public class ChatViewModel: ObservableObject {
                 selectedConversationId = first.id
             }
         } catch {
-            print("Error loading conversations: \(error)")
+            Log.debug("Error loading conversations: \(error)")
         }
     }
     
@@ -184,7 +184,7 @@ public class ChatViewModel: ObservableObject {
                     enabledAgentIds = userSelectableAgents.map { $0.id }
                     // Store agent names, not IDs, so they persist across app restarts
                     let allNames = userSelectableAgents.map { $0.name }
-                    UserDefaults.standard.set(allNames.joined(separator: ","), forKey: "enabledAgentNames")
+                    UserDefaults.standard.set(allNames.joined(separator: ","), forKey: UserDefaultsKey.enabledAgentNames)
                     UserDefaults.standard.removeObject(forKey: UserDefaultsKey.enabledAgentIds)
                 }
                 
@@ -218,7 +218,7 @@ public class ChatViewModel: ObservableObject {
                     if let firstAgent = userSelectableAgents.first {
                         enabledAgentIds = [firstAgent.id]
                         // Store agent name, not ID, so it persists across app restarts
-                        UserDefaults.standard.set(firstAgent.name, forKey: "enabledAgentNames")
+                        UserDefaults.standard.set(firstAgent.name, forKey: UserDefaultsKey.enabledAgentNames)
                         UserDefaults.standard.removeObject(forKey: UserDefaultsKey.enabledAgentIds)
                         
                         // Debug logging
@@ -267,7 +267,7 @@ public class ChatViewModel: ObservableObject {
             
             try conversationService.updateConversation(conversation)
         } catch {
-            print("Error creating conversation: \(error)")
+            Log.debug("Error creating conversation: \(error)")
         }
     }
     
@@ -275,7 +275,7 @@ public class ChatViewModel: ObservableObject {
     /// Resolves agent names to current agent IDs (handles ID changes on app restart)
     private func loadEnabledAgentIds() async -> [UUID] {
         // Try to load agent names first (new approach)
-        if let namesString = UserDefaults.standard.string(forKey: "enabledAgentNames"),
+        if let namesString = UserDefaults.standard.string(forKey: UserDefaultsKey.enabledAgentNames),
            !namesString.isEmpty {
             let agentNames = namesString.split(separator: ",").map { String($0) }
             
@@ -299,8 +299,8 @@ public class ChatViewModel: ObservableObject {
             if validIds.count < loadedIds.count {
                 let validAgents = currentAgents.filter { validIds.contains($0.id) }
                 let names = validAgents.filter { $0.name != AgentName.coordinator }.map { $0.name }
-                UserDefaults.standard.set(names.joined(separator: ","), forKey: "enabledAgentNames")
-                UserDefaults.standard.removeObject(forKey: "enabledAgentIds")
+                UserDefaults.standard.set(names.joined(separator: ","), forKey: UserDefaultsKey.enabledAgentNames)
+                UserDefaults.standard.removeObject(forKey: UserDefaultsKey.enabledAgentIds)
                 return await resolveAgentNamesToIds(agentNames: names)
             }
             
@@ -338,7 +338,7 @@ public class ChatViewModel: ObservableObject {
             
             try conversationService.updateConversation(conversation)
         } catch {
-            print("Error creating agent conversation: \(error)")
+            Log.debug("Error creating agent conversation: \(error)")
         }
     }
     
@@ -352,7 +352,7 @@ public class ChatViewModel: ObservableObject {
         do {
             try conversationService.updateConversation(conversations[index])
         } catch {
-            print("Error updating agent configuration: \(error)")
+            Log.debug("Error updating agent configuration: \(error)")
         }
     }
     
@@ -384,7 +384,7 @@ public class ChatViewModel: ObservableObject {
                 selectedConversationId = conversations.first?.id
             }
         } catch {
-            print("Error deleting conversation: \(error)")
+            Log.debug("Error deleting conversation: \(error)")
         }
         
         conversationToDelete = nil
@@ -417,7 +417,7 @@ public class ChatViewModel: ObservableObject {
         do {
             try conversationService.updateConversation(conversations[index])
         } catch {
-            print("Error renaming conversation: \(error)")
+            Log.debug("Error renaming conversation: \(error)")
         }
         
         editingConversationId = nil
@@ -437,7 +437,7 @@ public class ChatViewModel: ObservableObject {
             do {
                 filteredConversations = try conversationService.searchConversations(query: query)
             } catch {
-                print("Error searching conversations: \(error)")
+                Log.debug("Error searching conversations: \(error)")
                 filteredConversations = []
             }
         }
@@ -470,7 +470,7 @@ public class ChatViewModel: ObservableObject {
                 // Index user message immediately (wait for completion for current context building)
                 try await conversationService.addMessage(userMessage, to: conversationId, indexImmediately: true)
             } catch {
-                print("Error saving user message: \(error)")
+                Log.debug("Error saving user message: \(error)")
             }
         }
         
@@ -480,18 +480,18 @@ public class ChatViewModel: ObservableObject {
             let conversation = conversations.first(where: { $0.id == conversationId })
             let isAgentConversation = conversation?.conversationType != .chat && conversation?.agentConfiguration != nil
             
-            print("💬 Conversation check - Type: \(conversation?.conversationType.rawValue ?? "nil"), Has Config: \(conversation?.agentConfiguration != nil), Is Agent: \(isAgentConversation)")
+            Log.debug("💬 Conversation check - Type: \(conversation?.conversationType.rawValue ?? "nil"), Has Config: \(conversation?.agentConfiguration != nil), Is Agent: \(isAgentConversation)")
             
             let response: ModelResponse
             if isAgentConversation, let conv = conversation, let config = conv.agentConfiguration {
                 // Check useCoordinator setting to determine routing
                 let useCoordinator = UserDefaults.standard.object(forKey: UserDefaultsKey.useCoordinator) as? Bool ?? false
-                print("💬 useCoordinator: \(useCoordinator), pattern: \(config.orchestrationPattern.rawValue), agents: \(config.selectedAgents.count)")
+                Log.debug("💬 useCoordinator: \(useCoordinator), pattern: \(config.orchestrationPattern.rawValue), agents: \(config.selectedAgents.count)")
                 
                 if useCoordinator && config.orchestrationPattern == .orchestrator {
                     // Orchestrator mode: Use AgentService with orchestrator pattern
-                    print("🤖 Using orchestrator mode for message processing...")
-                    print("📊 Initializing orchestration visualization...")
+                    Log.debug("🤖 Using orchestrator mode for message processing...")
+                    Log.debug("📊 Initializing orchestration visualization...")
                     
                     // Create progress tracker for visualization
                     let progressTracker = OrchestrationProgressTracker()
@@ -500,7 +500,7 @@ public class ChatViewModel: ObservableObject {
                     // Initialize orchestration state
                     orchestrationState = OrchestrationState(currentPhase: .decision)
                     showOrchestrationDiagram = true
-                    print("📊 Orchestration state initialized: \(orchestrationState != nil)")
+                    Log.debug("📊 Orchestration state initialized: \(orchestrationState != nil)")
                     
                     // Subscribe to progress events
                     let trackingTask = Task { @MainActor in
@@ -511,9 +511,9 @@ public class ChatViewModel: ObservableObject {
                     progressTrackingTasks[conversationId] = trackingTask
                     
                     let service = agentService
-                    print("🤖 AgentService obtained, calling processMessage()...")
+                    Log.debug("🤖 AgentService obtained, calling processMessage()...")
                     let result = try await service.processMessage(text, conversationId: conversationId, conversation: conv, progressTracker: progressTracker)
-                    print("✅ AgentService.processMessage() completed")
+                    Log.debug("✅ AgentService.processMessage() completed")
                     
                     // Note: We'll store the final state with the assistant message ID after it's created
                     // Keep orchestrationState alive for now so the diagram shows during processing
@@ -525,7 +525,7 @@ public class ChatViewModel: ObservableObject {
                     response = ModelResponse(content: result.content, toolCalls: result.toolCalls)
                 } else if let singleAgentId = config.selectedAgents.first, config.selectedAgents.count == 1 {
                     // Single-agent mode: Use direct agent processing (no orchestrator)
-                    print("🤖 Using single-agent mode for message processing...")
+                    Log.debug("🤖 Using single-agent mode for message processing...")
                     
                     // Debug logging
                     await DebugLogger.shared.log(
@@ -543,11 +543,11 @@ public class ChatViewModel: ObservableObject {
                     )
                     
                     let service = agentService
-                    print("🤖 AgentService obtained, calling processSingleAgentMessage()...")
+                    Log.debug("🤖 AgentService obtained, calling processSingleAgentMessage()...")
                     // Extract file references from attachments
                     let fileReferences = attachments.map { $0.sandboxPath }
                     let result = try await service.processSingleAgentMessage(text, agentId: singleAgentId, conversationId: conversationId, conversation: conv, fileReferences: fileReferences)
-                    print("✅ AgentService.processSingleAgentMessage() completed")
+                    Log.debug("✅ AgentService.processSingleAgentMessage() completed")
                     
                     // Get agent name for display
                     let agents = await service.getAvailableAgents()
@@ -558,7 +558,7 @@ public class ChatViewModel: ObservableObject {
                     response = ModelResponse(content: result.content, toolCalls: result.toolCalls)
                 } else {
                     // Fallback: Use regular ModelService
-                    print("💬 Falling back to regular ModelService for message processing...")
+                    Log.debug("💬 Falling back to regular ModelService for message processing...")
                     let previousMessages: [Message]
                     if let index = conversations.firstIndex(where: { $0.id == conversationId }) {
                         previousMessages = Array(conversations[index].messages.dropLast())
@@ -574,7 +574,7 @@ public class ChatViewModel: ObservableObject {
                     )
                 }
             } else {
-                print("💬 Using regular ModelService for message processing...")
+                Log.debug("💬 Using regular ModelService for message processing...")
                 // Get previous messages for contextual mode
                 let previousMessages: [Message]
                 if let index = conversations.firstIndex(where: { $0.id == conversationId }) {
@@ -584,9 +584,9 @@ public class ChatViewModel: ObservableObject {
                     previousMessages = []
                 }
                 
-                print("💬 Getting ModelService (async)...")
+                Log.debug("💬 Getting ModelService (async)...")
                 let service = await getModelService()
-                print("💬 ModelService obtained, calling respond()...")
+                Log.debug("💬 ModelService obtained, calling respond()...")
                 response = try await service.respond(
                     to: text,
                     conversationId: conversationId,
@@ -614,8 +614,8 @@ public class ChatViewModel: ObservableObject {
                 // Store orchestration state with the assistant message ID (for persistence)
                 if let finalState = orchestrationState {
                     orchestrationStateByMessage[assistantMessage.id] = finalState
-                    print("📊 Stored orchestration state for message \(assistantMessage.id)")
-                    print("📊 Stored state has \(finalState.decomposition?.subtasks.count ?? 0) subtasks")
+                    Log.debug("📊 Stored orchestration state for message \(assistantMessage.id)")
+                    Log.debug("📊 Stored state has \(finalState.decomposition?.subtasks.count ?? 0) subtasks")
                     // #region debug log
                     await DebugLogger.shared.log(
                         location: "ChatViewModel.swift:sendMessage",
@@ -633,18 +633,18 @@ public class ChatViewModel: ObservableObject {
                     // Persist orchestration state to database
                     do {
                         try conversationService.saveOrchestrationState(finalState, for: assistantMessage.id)
-                        print("📊 Persisted orchestration state to database for message \(assistantMessage.id)")
+                        Log.debug("📊 Persisted orchestration state to database for message \(assistantMessage.id)")
                     } catch {
-                        print("⚠️ Failed to persist orchestration state: \(error)")
+                        Log.debug("⚠️ Failed to persist orchestration state: \(error)")
                     }
                     
                     // Store token usage from metrics
                     if let metrics = finalState.metrics {
                         conversations[index].tokenUsage = metrics.totalTokens
-                        print("📊 Stored token usage: \(metrics.totalTokens) tokens, savings: \(String(format: "%.2f", metrics.tokenSavingsPercentage))%")
+                        Log.debug("📊 Stored token usage: \(metrics.totalTokens) tokens, savings: \(String(format: "%.2f", metrics.tokenSavingsPercentage))%")
                     }
                 } else {
-                    print("⚠️ No orchestration state to store for message \(assistantMessage.id)")
+                    Log.debug("⚠️ No orchestration state to store for message \(assistantMessage.id)")
                     // #region debug log
                     await DebugLogger.shared.log(
                         location: "ChatViewModel.swift:sendMessage",
@@ -659,11 +659,11 @@ public class ChatViewModel: ObservableObject {
                     try await conversationService.addMessage(assistantMessage, to: conversationId, indexImmediately: false)
                     try conversationService.updateConversation(conversations[index])
                 } catch {
-                    print("Error saving assistant message: \(error)")
+                    Log.debug("Error saving assistant message: \(error)")
                 }
             }
         } catch {
-            print("Error getting model response: \(error)")
+            Log.debug("Error getting model response: \(error)")
             let responseTime = Date().timeIntervalSince(startTime)
             let friendlyMessage = Self.friendlyErrorMessage(for: error)
             let errorMessage = Message(role: .assistant, content: friendlyMessage, responseTime: responseTime)
@@ -690,7 +690,7 @@ public class ChatViewModel: ObservableObject {
         var state = orchestrationState ?? OrchestrationState(currentPhase: .decision)
         let timestamp = Date()
         
-        print("📊 Handling progress event: \(String(describing: event))")
+        Log.debug("📊 Handling progress event: \(String(describing: event))")
         
         // Create orchestration event and add to history
         var orchestrationEvent: OrchestrationEvent?
@@ -912,7 +912,7 @@ public class ChatViewModel: ObservableObject {
         }
         
         orchestrationState = state
-        print("📊 Updated orchestration state - Phase: \(state.currentPhase.rawValue), Subtasks: \(state.subtaskStates.count), Events: \(state.eventHistory.count)")
+        Log.debug("📊 Updated orchestration state - Phase: \(state.currentPhase.rawValue), Subtasks: \(state.subtaskStates.count), Events: \(state.eventHistory.count)")
     }
     
     // MARK: - Message Actions
@@ -957,7 +957,7 @@ public class ChatViewModel: ObservableObject {
             try conversationService.updateConversation(conversations[index])
             try await conversationService.addMessage(assistantMessage, to: conversationId, indexImmediately: false)
         } catch {
-            print("Error regenerating response: \(error)")
+            Log.debug("Error regenerating response: \(error)")
             let responseTime = Date().timeIntervalSince(startTime)
             let errorMessage = Message(role: .assistant, content: "Error: \(error.localizedDescription)", responseTime: responseTime)
             conversations[index].messages.append(errorMessage)
@@ -980,7 +980,7 @@ public class ChatViewModel: ObservableObject {
         do {
             try conversationService.updateConversation(conversations[index])
         } catch {
-            print("Error clearing conversation: \(error)")
+            Log.debug("Error clearing conversation: \(error)")
         }
     }
     

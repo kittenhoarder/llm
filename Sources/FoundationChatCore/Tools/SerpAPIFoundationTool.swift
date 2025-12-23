@@ -74,7 +74,7 @@ public struct SerpAPIFoundationTool: Tool, Sendable {
     /// - Returns: API key if found, nil otherwise
     private func getApiKey() -> String? {
         // Try UserDefaults first (for UI settings)
-        if let key = UserDefaults.standard.string(forKey: "serpapiApiKey"), !key.isEmpty {
+        if let key = UserDefaults.standard.string(forKey: UserDefaultsKey.serpapiApiKey), !key.isEmpty {
             return key
         }
         
@@ -119,5 +119,4 @@ public struct SerpAPIFoundationTool: Tool, Sendable {
         return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
-
 

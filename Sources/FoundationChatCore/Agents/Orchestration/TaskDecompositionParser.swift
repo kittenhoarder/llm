@@ -24,17 +24,17 @@ public actor TaskDecompositionParser {
     ///   - availableAgents: List of available agents for matching
     /// - Returns: Parsed task decomposition, or nil if parsing fails
     public func parse(_ analysis: String, availableAgents: [any Agent]) async -> TaskDecomposition? {
-        print("🔍 TaskDecompositionParser: Parsing coordinator analysis...")
+        Log.debug("🔍 TaskDecompositionParser: Parsing coordinator analysis...")
         
         // Try to extract subtasks using various patterns
         let subtasks = await extractSubtasks(from: analysis, availableAgents: availableAgents)
         
         guard !subtasks.isEmpty else {
-            print("⚠️ TaskDecompositionParser: No subtasks extracted, parsing failed")
+            Log.warn("⚠️ TaskDecompositionParser: No subtasks extracted, parsing failed")
             return nil
         }
         
-        print("✅ TaskDecompositionParser: Extracted \(subtasks.count) subtasks")
+        Log.debug("✅ TaskDecompositionParser: Extracted \(subtasks.count) subtasks")
         
         // Estimate token costs
         let subtasksWithCosts = await estimateTokenCosts(subtasks)
@@ -63,6 +63,69 @@ public actor TaskDecompositionParser {
                 "textPreview": String(text.prefix(300))
             ]
         )
+
+        // Pattern -1: JSON Block (New Format)
+        // Try to find a JSON block and parse it
+        if let jsonBlock = extractJSONBlock(from: text),
+           let jsonData = jsonBlock.data(using: .utf8) {
+            
+            do {
+                let decoded = try JSONDecoder().decode(JSONDecomposition.self, from: jsonData)
+                
+                var parsedSubtasks: [DecomposedSubtask] = []
+                var subtaskNumberToID: [Int: UUID] = [:]
+                
+                // First pass: create subtasks and map IDs
+                for jsonTask in decoded.subtasks {
+                    let agentName = matchAgent(jsonTask.agent, availableAgents: availableAgents)
+                    // Infer capabilities from agent name or defaults
+                    let capabilities = inferCapabilities(for: agentName, availableAgents: availableAgents)
+                    
+                    let subtask = DecomposedSubtask(
+                        description: jsonTask.description,
+                        agentName: agentName,
+                        requiredCapabilities: capabilities,
+                        canExecuteInParallel: true // Will be refined by dependencies
+                    )
+                    subtaskNumberToID[jsonTask.id] = subtask.id
+                    parsedSubtasks.append(subtask)
+                }
+                
+                // Second pass: map dependencies
+                var finalSubtasks: [DecomposedSubtask] = []
+                for (index, jsonTask) in decoded.subtasks.enumerated() {
+                    let subtask = parsedSubtasks[index]
+                    var dependencyUUIDs: [UUID] = []
+                    
+                    if let deps = jsonTask.dependencies {
+                        for depId in deps {
+                            if let uuid = subtaskNumberToID[depId] {
+                                dependencyUUIDs.append(uuid)
+                            }
+                        }
+                    }
+                    
+                    let finalSubtask = DecomposedSubtask(
+                        id: subtask.id,
+                        description: subtask.description,
+                        agentName: subtask.agentName,
+                        requiredCapabilities: subtask.requiredCapabilities,
+                        priority: subtask.priority, // Will be calculated later
+                        dependencies: dependencyUUIDs,
+                        canExecuteInParallel: dependencyUUIDs.isEmpty,
+                        estimatedTokenCost: subtask.estimatedTokenCost
+                    )
+                    finalSubtasks.append(finalSubtask)
+                }
+                
+                Log.debug("✅ TaskDecompositionParser: Successfully parsed JSON decomposition with \(finalSubtasks.count) subtasks")
+                return finalSubtasks
+                
+            } catch {
+                Log.warn("⚠️ TaskDecompositionParser: JSON parsing failed: \(error)")
+                // Fallthrough to regex parsing
+            }
+        }
         
         // Pattern 0: Markdown subtask headers (### or #### Subtask N: Description)
         // This pattern extracts structured subtasks with headers like "### Subtask 1: ..." or "#### Subtask 1: ..."
@@ -153,7 +216,7 @@ public actor TaskDecompositionParser {
                         subtaskNumberToID[subtaskNumber] = subtask.id
                         parsedSubtasks.append((subtaskNumber, subtask))
                     } else {
-                        print("🔍 TaskDecompositionParser: Rejected subtask from markdown header: \(description.prefix(80))")
+                        Log.debug("🔍 TaskDecompositionParser: Rejected subtask from markdown header: \(description.prefix(80))")
                     }
                 }
             }
@@ -162,14 +225,14 @@ public actor TaskDecompositionParser {
             for (subtaskNumber, subtask) in parsedSubtasks {
                 var finalSubtask = subtask
                 if let sectionText = subtaskSections[subtaskNumber] {
-                    print("🔍 TaskDecompositionParser: Extracting dependencies for Subtask \(subtaskNumber)")
-                    print("🔍 TaskDecompositionParser: Section text: \(String(sectionText.prefix(200)))")
+                    Log.debug("🔍 TaskDecompositionParser: Extracting dependencies for Subtask \(subtaskNumber)")
+                    Log.debug("🔍 TaskDecompositionParser: Section text: \(String(sectionText.prefix(200)))")
                     let dependencies = extractDependencies(
                         from: sectionText,
                         subtaskNumber: subtaskNumber,
                         subtaskNumberToID: subtaskNumberToID
                     )
-                    print("🔍 TaskDecompositionParser: Found \(dependencies.count) dependencies for Subtask \(subtaskNumber)")
+                    Log.debug("🔍 TaskDecompositionParser: Found \(dependencies.count) dependencies for Subtask \(subtaskNumber)")
                     if !dependencies.isEmpty {
                         // Create new subtask with dependencies
                         finalSubtask = DecomposedSubtask(
@@ -182,19 +245,19 @@ public actor TaskDecompositionParser {
                             canExecuteInParallel: dependencies.isEmpty && subtask.canExecuteInParallel,
                             estimatedTokenCost: subtask.estimatedTokenCost
                         )
-                        print("🔗 TaskDecompositionParser: Subtask \(subtaskNumber) has \(dependencies.count) dependencies: \(dependencies.map { $0.uuidString.prefix(8) })")
+                        Log.debug("🔗 TaskDecompositionParser: Subtask \(subtaskNumber) has \(dependencies.count) dependencies: \(dependencies.map { $0.uuidString.prefix(8) })")
                     } else {
-                        print("⚠️ TaskDecompositionParser: Subtask \(subtaskNumber) has NO dependencies (may be incorrect)")
+                        Log.warn("⚠️ TaskDecompositionParser: Subtask \(subtaskNumber) has NO dependencies (may be incorrect)")
                     }
                 } else {
-                    print("⚠️ TaskDecompositionParser: No section text found for Subtask \(subtaskNumber)")
+                    Log.warn("⚠️ TaskDecompositionParser: No section text found for Subtask \(subtaskNumber)")
                 }
                 subtasks.append(finalSubtask)
             }
             
             // If we found subtasks with markdown pattern, don't fall back to other patterns
             if !subtasks.isEmpty {
-                print("✅ TaskDecompositionParser: Found \(subtasks.count) subtasks via markdown pattern, skipping other patterns")
+                Log.debug("✅ TaskDecompositionParser: Found \(subtasks.count) subtasks via markdown pattern, skipping other patterns")
             }
         }
         
@@ -311,7 +374,7 @@ public actor TaskDecompositionParser {
             for paragraph in paragraphs {
                 // Skip paragraphs that are mostly metadata
                 if isMetadataParagraph(paragraph) {
-                    print("🔍 TaskDecompositionParser: Skipping metadata paragraph: \(paragraph.prefix(80))")
+                    Log.debug("🔍 TaskDecompositionParser: Skipping metadata paragraph: \(paragraph.prefix(80))")
                     continue
                 }
                 if let subtask = parseSubtaskText(paragraph, availableAgents: availableAgents) {
@@ -346,13 +409,13 @@ public actor TaskDecompositionParser {
         // Filter out metadata-only lines (like "**Capabilities Needed:** dataAnalysis")
         // These are not actual subtasks, just metadata fields
         if isMetadataField(trimmed) {
-            print("🔍 TaskDecompositionParser: Skipping metadata field: \(trimmed.prefix(80))")
+            Log.debug("🔍 TaskDecompositionParser: Skipping metadata field: \(trimmed.prefix(80))")
             return nil
         }
         
         // Also filter out very short descriptions that are likely just labels
         if trimmed.count < 15 {
-            print("🔍 TaskDecompositionParser: Skipping very short text (likely label): \(trimmed)")
+            Log.debug("🔍 TaskDecompositionParser: Skipping very short text (likely label): \(trimmed)")
             return nil
         }
         
@@ -719,7 +782,7 @@ public actor TaskDecompositionParser {
                            let depNumber = Int(String(textToSearch[numberRange])),
                            depNumber != subtaskNumber { // Don't depend on self
                             foundNumbers.insert(depNumber)
-                            print("🔍 TaskDecompositionParser: Found dependency pattern '\(pattern)' matching Subtask \(depNumber)")
+                            Log.debug("🔍 TaskDecompositionParser: Found dependency pattern '\(pattern)' matching Subtask \(depNumber)")
                         }
                     }
                 }
@@ -738,7 +801,7 @@ public actor TaskDecompositionParser {
                        let firstNum = Int(String(textToSearch[firstRange])),
                        firstNum != subtaskNumber {
                         foundNumbers.insert(firstNum)
-                        print("🔍 TaskDecompositionParser: Found list dependency pattern matching Subtask \(firstNum)")
+                        Log.debug("🔍 TaskDecompositionParser: Found list dependency pattern matching Subtask \(firstNum)")
                     }
                     // Additional numbers in subsequent groups
                     for i in 2..<match.numberOfRanges {
@@ -746,7 +809,7 @@ public actor TaskDecompositionParser {
                            let num = Int(String(textToSearch[range])),
                            num != subtaskNumber {
                             foundNumbers.insert(num)
-                            print("🔍 TaskDecompositionParser: Found list dependency pattern matching Subtask \(num)")
+                            Log.debug("🔍 TaskDecompositionParser: Found list dependency pattern matching Subtask \(num)")
                         }
                     }
                 }
@@ -757,9 +820,9 @@ public actor TaskDecompositionParser {
         for depNumber in foundNumbers.sorted() {
             if let depUUID = subtaskNumberToID[depNumber] {
                 dependencyUUIDs.append(depUUID)
-                print("🔗 TaskDecompositionParser: Subtask \(subtaskNumber) depends on Subtask \(depNumber)")
+                Log.debug("🔗 TaskDecompositionParser: Subtask \(subtaskNumber) depends on Subtask \(depNumber)")
             } else {
-                print("⚠️ TaskDecompositionParser: Could not find UUID for Subtask \(depNumber) (dependency of Subtask \(subtaskNumber))")
+                Log.warn("⚠️ TaskDecompositionParser: Could not find UUID for Subtask \(depNumber) (dependency of Subtask \(subtaskNumber))")
             }
         }
         
@@ -831,3 +894,65 @@ public actor TaskDecompositionParser {
     }
 }
 
+// MARK: - JSON Parsing Helpers
+
+private struct JSONDecomposition: Codable {
+    struct JSONSubtask: Codable {
+        let id: Int
+        let description: String
+        let agent: String
+        let dependencies: [Int]?
+    }
+    let subtasks: [JSONSubtask]
+}
+
+extension TaskDecompositionParser {
+    
+    /// Extract JSON block from text (markdown or raw)
+    private func extractJSONBlock(from text: String) -> String? {
+        // Look for ```json ... ```
+        let pattern = #"(?s)```json\s*(\{.*?\})\s*```"#
+        if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+            if let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+               let range = Range(match.range(at: 1), in: text) {
+                return String(text[range])
+            }
+        }
+        
+        // Look for just { ... } if it looks like the whole message is JSON
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") {
+            return trimmed
+        }
+        
+        return nil
+    }
+    
+    /// Match agent name string to available agents
+    private func matchAgent(_ name: String, availableAgents: [any Agent]) -> String {
+        let normalized = name.lowercased().trimmingCharacters(in: .whitespaces)
+        
+        // Exact match
+        if let match = availableAgents.first(where: { $0.name.lowercased() == normalized }) {
+            return match.name
+        }
+        
+        // Partial match
+        if let match = availableAgents.first(where: {
+            $0.name.lowercased().contains(normalized) || normalized.contains($0.name.lowercased())
+        }) {
+            return match.name
+        }
+        
+        // Fallback to first available or "Unknown"
+        return availableAgents.first?.name ?? "Unknown"
+    }
+    
+    /// Infer capabilities based on agent name
+    private func inferCapabilities(for agentName: String, availableAgents: [any Agent]) -> Set<AgentCapability> {
+        if let agent = availableAgents.first(where: { $0.name == agentName }) {
+            return agent.capabilities
+        }
+        return []
+    }
+}

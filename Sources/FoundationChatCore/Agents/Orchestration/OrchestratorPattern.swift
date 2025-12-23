@@ -98,7 +98,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         var coordinatorSynthesisTime: TimeInterval = 0
         var specializedAgentsTime: TimeInterval = 0
         
-        print("🎯 OrchestratorPattern: Starting execution for task '\(task.description.prefix(50))...'")
+        Log.debug("🎯 OrchestratorPattern: Starting execution for task '\(task.description.prefix(50))...'")
         
         // Fast-path: if an image is attached, bypass LLM-based decomposition and route directly to Vision Agent.
         // This avoids incorrect plans like "web search for local file path" and ensures the image is actually analyzed.
@@ -106,7 +106,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         if let imagePath = firstImagePath(in: currentAttachments),
            let visionAgent = agents.first(where: { $0.capabilities.contains(.imageAnalysis) || $0.name == AgentName.visionAgent }) {
             let start = Date()
-            print("🖼️ OrchestratorPattern: Image attachment detected, routing directly to Vision Agent (\(visionAgent.name))")
+            Log.debug("🖼️ OrchestratorPattern: Image attachment detected, routing directly to Vision Agent (\(visionAgent.name))")
             
             if let tracker = progressTracker {
                 await tracker.emit(.delegationDecision(
@@ -173,14 +173,14 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         // Check if smart delegation is enabled (default: true if key doesn't exist)
         let smartDelegationEnabled: Bool
-        if UserDefaults.standard.object(forKey: "smartDelegation") != nil {
-            smartDelegationEnabled = UserDefaults.standard.bool(forKey: "smartDelegation")
+        if UserDefaults.standard.object(forKey: UserDefaultsKey.smartDelegation) != nil {
+            smartDelegationEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKey.smartDelegation)
         } else {
             smartDelegationEnabled = true // Default to enabled
         }
         if smartDelegationEnabled {
             // Step 0: Decision step - should we delegate or respond directly?
-            let (shouldDelegate, decisionReason) = try await shouldDelegateWithReason(task: task, context: context)
+            let (shouldDelegate, decisionReason) = try await shouldDelegateWithReason(task: task, context: context, agents: agents)
             
             // Emit delegation decision event
             if let tracker = progressTracker {
@@ -188,171 +188,59 @@ public struct OrchestratorPattern: OrchestrationPattern {
             }
             
             if !shouldDelegate {
-                print("💬 OrchestratorPattern: Coordinator decided to respond directly (no delegation)")
+                Log.debug("💬 OrchestratorPattern: Coordinator decided to respond directly (no delegation)")
                 // Don't emit metrics here - respondDirectly() will calculate and emit proper metrics
                 return try await respondDirectly(task: task, context: context, progressTracker: progressTracker)
             }
             
-            print("🔄 OrchestratorPattern: Coordinator decided to delegate to specialized agents")
+            Log.debug("🔄 OrchestratorPattern: Coordinator decided to delegate to specialized agents")
         }
         
         // Step 1: Use coordinator to analyze task and determine which agents are needed
         let analysisStartTime = Date()
         
-        // Build comprehensive analysis task description with web search guidance
-        var analysisTaskDescription = """
-            # Task Analysis and Decomposition
-            
-            Your role is to analyze complex tasks and break them down into well-structured subtasks that can be executed by specialized agents. Follow these guidelines carefully.
-            
-            ## 1. Web Search Decision Framework
-            
-            **When to use Web Search Agent:**
-            - The task requires current information, real-time data, or recent updates
-            - The task asks about external knowledge not available in the codebase or files
-            - The task involves facts, statistics, news, or information that changes over time
-            - The task requires searching for documentation, tutorials, or best practices from external sources
-            - The task asks "search for", "find information about", "look up", or similar web search requests
-            
-            **When NOT to use Web Search Agent:**
-            - The task involves analyzing code, files, or data already in context
-            - The task is a calculation or data analysis that doesn't require external information
-            - The task can be answered from the conversation history or provided files
-            - The task is about understanding or modifying existing code in the codebase
-            
-            ## 2. Web Search Query Best Practices
-            
-            When creating web search subtasks, structure queries effectively:
-            
-            **Good Query Examples:**
-            - "Swift async await best practices 2024"
-            - "Python pandas dataframe filtering tutorial"
-            - "React useState hook examples and patterns"
-            - "SQLite migration best practices"
-            
-            **Poor Query Examples:**
-            - "stuff about Swift" (too vague)
-            - "help" (not actionable)
-            - "everything about programming" (too broad)
-            
-            **Query Guidelines:**
-            - Be specific and focused on a single topic or question
-            - Include relevant keywords that match how people search
-            - Break complex topics into multiple focused searches if needed
-            - Use natural language that search engines understand
-            - Include year or version numbers for time-sensitive information
-            
-            ## 3. Task Decomposition Patterns
-            
-            **Pattern 1: Search then Analyze**
-            ```
-            Subtask 1: Search for [specific topic] using Web Search Agent
-            Subtask 2: Analyze search results and extract key insights (depends on Subtask 1)
-            Subtask 3: Synthesize findings into final answer (depends on Subtask 2)
-            ```
-            
-            **Pattern 2: Parallel Searches**
-            ```
-            Subtask 1: Search for [topic A] using Web Search Agent (can run in parallel)
-            Subtask 2: Search for [topic B] using Web Search Agent (can run in parallel)
-            Subtask 3: Compare and synthesize both search results (depends on Subtasks 1 and 2)
-            ```
-            
-            **Pattern 3: Sequential Search Chain**
-            ```
-            Subtask 1: Search for [foundational concept] using Web Search Agent
-            Subtask 2: Search for [advanced topic] using Web Search Agent (depends on Subtask 1)
-            Subtask 3: Analyze and combine both search results (depends on Subtask 2)
-            ```
-            
-            **Key Principles:**
-            - If a task requires web search, create a dedicated subtask for the search
-            - Always create a follow-up subtask to analyze search results (don't just search and stop)
-            - Break complex searches into multiple focused queries rather than one broad query
-            - Make dependencies explicit: analysis subtasks depend on their search subtasks
-            
-            ## 4. Output Format Requirements
-            
-            For each subtask, you MUST specify:
-            
-            **Format:**
-            ```
-            #### Subtask N: [Clear, specific task description]
-            
-            **Specific Task Description:** [Detailed description of what needs to be done]
-            **Agent to Handle:** [Agent name from available agents]
-            **Capabilities Needed:** [List of required capabilities]
-            **Dependencies:** [List any subtask numbers this depends on, or "None"]
-            **Parallel Capability:** [Yes/No - can this run in parallel with other subtasks?]
-            ```
-            
-            **Important:**
-            - Use clear, actionable task descriptions (e.g., "Search the web for 'Swift async await best practices'")
-            - Specify the exact agent name from the available agents list
-            - List all dependencies explicitly (e.g., "Dependencies: Subtask 1")
-            - Indicate if subtasks can run in parallel (default to Yes unless dependencies exist)
-            
-            ## 5. Available Agents
-            
-            **IMPORTANT: You MUST only use agents from this list. Do NOT create subtasks for agents that are not listed here.**
-            
-            \(agents.map { "**\($0.name)**: \($0.description) (capabilities: \($0.capabilities.map { $0.rawValue }.joined(separator: ", ")))" }.joined(separator: "\n\n"))
-            """
+        let availableCapabilities = Set(agents.flatMap { $0.capabilities })
+        let hasWebSearch = availableCapabilities.contains(.webSearch)
+        let hasFileReader = availableCapabilities.contains(.fileReading)
+        let hasVision = availableCapabilities.contains(.imageAnalysis)
         
-        if !context.fileReferences.isEmpty {
-            analysisTaskDescription += """
-            
-            ## 6. Attached Files
-            
-            This task has \(context.fileReferences.count) attached file(s).
-            - If the task involves analyzing text files, code files, or documents, delegate to the File Reader agent
-            - If the task involves analyzing images (photos, screenshots, diagrams, etc.), delegate to the Vision Agent
-            - NEVER create a web search subtask to "describe" a local file path (e.g. `/Users/.../IMG_1234.jpg`) — web search cannot access local files
-            - If the user asks "describe this image" and an image is attached, use the Vision Agent (do not use Web Search)
-            - File analysis can often run in parallel with web searches if they're independent (but attached-file inspection is never done via web search)
-            """
-        }
+        // Build comprehensive analysis task description with dynamic guidance
+        // Initialize RAG content variable
+        var ragContent = ""
         
         // Truncate task description if too long for analysis prompt (do this BEFORE adding RAG chunks)
         let tokenCounter = TokenCounter()
         var taskDescriptionForAnalysis = task.description
         let taskTokens = await tokenCounter.countTokens(taskDescriptionForAnalysis)
         
-        // Reserve tokens for the analysis prompt structure, RAG chunks, and context
-        // The analysis prompt itself is quite long (~1500 tokens), reserve space for RAG chunks (~500 tokens)
         let maxTaskTokens = 2000
         if taskTokens > maxTaskTokens {
             let maxChars = maxTaskTokens * 4 // Rough char-to-token conversion
             let truncated = String(taskDescriptionForAnalysis.prefix(maxChars))
             taskDescriptionForAnalysis = truncated + "\n\n[Full message content available in conversation history above]"
-            print("⚠️ OrchestratorPattern: Truncated task description in analysis prompt from \(taskTokens) to ~\(maxTaskTokens) tokens")
+            Log.warn("⚠️ OrchestratorPattern: Truncated task description in analysis prompt from \(taskTokens) to ~\(maxTaskTokens) tokens")
         }
         
         // Add RAG chunks if available, with token-aware truncation
         if !context.ragChunks.isEmpty {
             // Calculate available tokens for RAG chunks
-            // Reserve ~2000 tokens for analysis prompt structure, ~500 for task description, ~500 for output
             let maxPromptTokens = 4096
             let reservedTokens = 2000 + 500 + 500 // prompt structure + task + output reserve
             let availableForRAG = max(0, maxPromptTokens - reservedTokens - Int(taskTokens))
             
-            var ragContent = ""
             var ragTokensUsed = 0
-            let ragHeader = "\n\n## 7. Relevant Document Content (from attached files)\n\nThe following content was retrieved from attached files and is highly relevant to this task:\n\n"
-            let ragFooter = "\n\n**IMPORTANT:** If the task can be answered using this document content, you should NOT create web search subtasks. Instead, delegate to the File Reader agent to analyze this content, or answer directly if the information is already provided above."
-            let ragHeaderTokens = await tokenCounter.countTokens(ragHeader + ragFooter)
             
             // Add chunks until we run out of token budget
             for chunk in context.ragChunks.prefix(5) {
                 let chunkText = ragContent.isEmpty ? chunk.content : "\n\n---\n\n\(chunk.content)"
                 let chunkTokens = await tokenCounter.countTokens(chunkText)
                 
-                if ragTokensUsed + chunkTokens + ragHeaderTokens <= availableForRAG {
+                if ragTokensUsed + chunkTokens <= availableForRAG {
                     ragContent += chunkText
                     ragTokensUsed += chunkTokens
                 } else {
                     // Truncate this chunk to fit remaining budget
-                    let remainingTokens = max(0, availableForRAG - ragTokensUsed - ragHeaderTokens)
+                    let remainingTokens = max(0, availableForRAG - ragTokensUsed)
                     if remainingTokens > 100 { // Only add if we have meaningful space
                         let maxChars = remainingTokens * 4
                         let truncatedChunk = String(chunk.content.prefix(maxChars))
@@ -364,37 +252,24 @@ public struct OrchestratorPattern: OrchestrationPattern {
             }
             
             if !ragContent.isEmpty {
-                analysisTaskDescription += ragHeader + ragContent + ragFooter
-                print("📄 OrchestratorPattern: Added \(ragTokensUsed) tokens of RAG content to analysis prompt")
+                Log.debug("📄 OrchestratorPattern: Added \(ragTokensUsed) tokens of RAG content to analysis prompt")
             }
         }
         
-        analysisTaskDescription += """
-            
-            ## \(context.ragChunks.isEmpty ? "7" : "8"). Answering Specific Questions
-            
-            **CRITICAL**: When the user asks a specific question (e.g., "What is 1.4.4 about?"), you MUST:
-            - Include the user's exact question in the subtask description
-            - Make the subtask description specific to finding that information
-            - Example: Instead of "Analyze the PDF", use "Find section 1.4.4 in the PDF and explain what it's about"
-            
-            **For File Analysis Tasks:**
-            - If the question mentions a section number (e.g., "1.4.4"), the subtask MUST explicitly mention finding that section
-            - If the question asks about a specific topic, the subtask MUST focus on finding that topic
-            - Generic summaries are NOT acceptable when a specific question is asked
-            
-            ## \(context.ragChunks.isEmpty ? "8" : "9"). Task to Analyze
-            
-            **Task:** \(taskDescriptionForAnalysis)
-            
-            Now analyze this task and provide a complete breakdown following all the guidelines above. Be thorough, specific, and ensure web search tasks are properly structured with clear queries and follow-up analysis subtasks.
-            """
+        // Use the optimized prompt template
+        var analysisTaskDescription = PromptTemplates.orchestratorAnalysis(
+            task: taskDescriptionForAnalysis,
+            agents: agents,
+            fileReferences: context.fileReferences,
+            hasWebSearch: hasWebSearch,
+            ragContent: ragContent.isEmpty ? nil : ragContent
+        )
         
         // Final token check on analysis task description before creating task
         let analysisTaskTokens = await tokenCounter.countTokens(analysisTaskDescription)
         let maxAnalysisTaskTokens = 3500 // Reserve ~600 for system/tools/output
         if analysisTaskTokens > maxAnalysisTaskTokens {
-            print("⚠️ OrchestratorPattern: Analysis task description exceeds budget (\(analysisTaskTokens) > \(maxAnalysisTaskTokens)), truncating...")
+            Log.warn("⚠️ OrchestratorPattern: Analysis task description exceeds budget (\(analysisTaskTokens) > \(maxAnalysisTaskTokens)), truncating...")
             let maxChars = maxAnalysisTaskTokens * 4
             analysisTaskDescription = String(analysisTaskDescription.prefix(maxChars)) + "\n\n[Analysis prompt truncated due to length]"
         }
@@ -410,7 +285,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         // Final safety check - ensure prompt doesn't exceed 4096 tokens
         let finalAnalysisPromptTokens = await tokenCounter.countTokens(analysisPrompt)
         if finalAnalysisPromptTokens > 4096 {
-            print("⚠️ OrchestratorPattern: Analysis prompt exceeds 4096 tokens (\(finalAnalysisPromptTokens)), truncating aggressively...")
+            Log.warn("⚠️ OrchestratorPattern: Analysis prompt exceeds 4096 tokens (\(finalAnalysisPromptTokens)), truncating aggressively...")
             let maxChars = 3500 * 4 // Reserve more aggressively for system/tools/output
             analysisPrompt = String(analysisPrompt.prefix(maxChars)) + "\n\n[Prompt truncated due to context window limits]"
             
@@ -446,7 +321,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
                     description: analysisPrompt,
                     requiredCapabilities: [.generalReasoning]
                 )
-                print("⚠️ OrchestratorPattern: Synthesis prompt truncated from \(finalAnalysisPromptTokens) to ~\(synthesisMaxTokens) tokens")
+                Log.warn("⚠️ OrchestratorPattern: Synthesis prompt truncated from \(finalAnalysisPromptTokens) to ~\(synthesisMaxTokens) tokens")
             }
         }
         
@@ -487,8 +362,8 @@ public struct OrchestratorPattern: OrchestrationPattern {
         await tokenTracker.trackResponse(agentId: coordinator.id, response: analysisResult.content)
         await tokenTracker.trackToolCalls(agentId: coordinator.id, toolCalls: analysisResult.toolCalls)
         
-        print("📊 OrchestratorPattern: Coordinator analysis completed in \(String(format: "%.2f", coordinatorAnalysisTime))s")
-        print("📝 OrchestratorPattern: Coordinator analysis output:\n\(analysisResult.content)")
+        Log.debug("📊 OrchestratorPattern: Coordinator analysis completed in \(String(format: "%.2f", coordinatorAnalysisTime))s")
+        Log.debug("📝 OrchestratorPattern: Coordinator analysis output:\n\(analysisResult.content)")
         
         // Debug logging
         await DebugLogger.shared.log(
@@ -550,10 +425,10 @@ public struct OrchestratorPattern: OrchestrationPattern {
             ]
         )
         
-        print("✂️ OrchestratorPattern: Pruned \(subtasksPruned) subtasks, \(finalDecomposition.subtasks.count) remaining")
+        Log.debug("✂️ OrchestratorPattern: Pruned \(subtasksPruned) subtasks, \(finalDecomposition.subtasks.count) remaining")
         if !prunedResult.removalRationales.isEmpty {
             for (id, rationale) in prunedResult.removalRationales {
-                print("  - Removed subtask \(id.uuidString.prefix(8)): \(rationale)")
+                Log.debug("  - Removed subtask \(id.uuidString.prefix(8)): \(rationale)")
                 // Emit subtask pruned event
                 if let tracker = progressTracker {
                     await tracker.emit(.subtaskPruned(subtaskId: id, rationale: rationale))
@@ -568,7 +443,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         // Check if we successfully parsed subtasks
         guard !finalDecomposition.subtasks.isEmpty else {
-            print("⚠️ OrchestratorPattern: No subtasks parsed, falling back to capability-based matching")
+            Log.warn("⚠️ OrchestratorPattern: No subtasks parsed, falling back to capability-based matching")
             return try await fallbackExecution(task: task, agents: agents, context: context)
         }
         
@@ -590,13 +465,13 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         // Get parallelizable groups
         let parallelGroups = finalDecomposition.getParallelizableGroups()
-        print("🔄 OrchestratorPattern: Executing \(parallelGroups.count) groups of subtasks")
+        Log.debug("🔄 OrchestratorPattern: Executing \(parallelGroups.count) groups of subtasks")
         
         let specializedStartTime = Date()
         
         // Execute groups sequentially, but subtasks within groups in parallel
         for (groupIndex, group) in parallelGroups.enumerated() {
-            print("📦 OrchestratorPattern: Executing group \(groupIndex + 1)/\(parallelGroups.count) with \(group.count) subtasks")
+            Log.debug("📦 OrchestratorPattern: Executing group \(groupIndex + 1)/\(parallelGroups.count) with \(group.count) subtasks")
             
             if group.count == 1 || !group.allSatisfy({ $0.canExecuteInParallel }) {
                 // Sequential execution
@@ -670,7 +545,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
             )
             
             if !newSubtasks.isEmpty {
-                print("🔄 OrchestratorPattern: Adding \(newSubtasks.count) dynamically created subtasks from conditional branches")
+                Log.debug("🔄 OrchestratorPattern: Adding \(newSubtasks.count) dynamically created subtasks from conditional branches")
                 finalDecomposition.addSubtasks(newSubtasks)
                 
                 // Recalculate parallel groups with new subtasks
@@ -681,7 +556,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
                     // There are new groups to execute
                     let newGroups = Array(updatedParallelGroups[parallelGroups.count...])
                     for newGroup in newGroups {
-                        print("📦 OrchestratorPattern: Executing new group with \(newGroup.count) dynamically created subtasks")
+                        Log.debug("📦 OrchestratorPattern: Executing new group with \(newGroup.count) dynamically created subtasks")
                         
                         if newGroup.count == 1 || !newGroup.allSatisfy({ $0.canExecuteInParallel }) {
                             // Sequential execution
@@ -743,7 +618,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         }
         
         specializedAgentsTime = Date().timeIntervalSince(specializedStartTime)
-        print("✅ OrchestratorPattern: All specialized agents completed in \(String(format: "%.2f", specializedAgentsTime))s")
+        Log.debug("✅ OrchestratorPattern: All specialized agents completed in \(String(format: "%.2f", specializedAgentsTime))s")
         
         // Check for cancellation before synthesis
         try cancellationToken?.checkCancellation()
@@ -822,9 +697,9 @@ public struct OrchestratorPattern: OrchestrationPattern {
         )
         
         if totalSVDBSavings > 0 {
-            print("📊 OrchestratorPattern: Token usage - Total: \(totalTokens), SVDB Savings: \(totalSVDBSavings), Net Total: \(totalTokens - totalSVDBSavings), Overall Savings: \(String(format: "%.1f", savingsPercentage))%")
+            Log.debug("📊 OrchestratorPattern: Token usage - Total: \(totalTokens), SVDB Savings: \(totalSVDBSavings), Net Total: \(totalTokens - totalSVDBSavings), Overall Savings: \(String(format: "%.1f", savingsPercentage))%")
         } else {
-            print("📊 OrchestratorPattern: Token usage - Total: \(totalTokens), Savings: \(String(format: "%.1f", savingsPercentage))%")
+            Log.debug("📊 OrchestratorPattern: Token usage - Total: \(totalTokens), Savings: \(String(format: "%.1f", savingsPercentage))%")
         }
         
         // Store token usage in context
@@ -863,13 +738,13 @@ public struct OrchestratorPattern: OrchestrationPattern {
         progressTracker: OrchestrationProgressTracker? = nil,
         cancellationToken: WorkflowCancellationToken? = nil
     ) async throws -> AgentResult {
-        print("🎯 OrchestratorPattern: Executing subtask '\(subtask.description.prefix(50))...'")
+        Log.debug("🎯 OrchestratorPattern: Executing subtask '\(subtask.description.prefix(50))...'")
         
         // Find matching agent
         let agent = await findAgent(for: subtask, in: agents)
         
         guard let selectedAgent = agent else {
-            print("⚠️ OrchestratorPattern: No agent found for subtask, using coordinator")
+            Log.warn("⚠️ OrchestratorPattern: No agent found for subtask, using coordinator")
             let subtaskTask = AgentTask(description: subtask.description, requiredCapabilities: subtask.requiredCapabilities)
             // Emit subtask started with coordinator
             if let tracker = progressTracker {
@@ -894,7 +769,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
             // Check for cancellation before each attempt
             try cancellationToken?.checkCancellation()
             
-            print("🤖 OrchestratorPattern: Selected agent '\(selectedAgent.name)' for subtask (attempt \(attemptNumber + 1)/\(retryPolicy.maxAttempts))")
+            Log.debug("🤖 OrchestratorPattern: Selected agent '\(selectedAgent.name)' for subtask (attempt \(attemptNumber + 1)/\(retryPolicy.maxAttempts))")
             
             // Emit subtask started event (or retry event)
             if let tracker = progressTracker {
@@ -911,7 +786,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
             if attemptNumber > 0 {
                 let delay = retryPolicy.delay(for: attemptNumber - 1)
                 if delay > 0 {
-                    print("⏳ OrchestratorPattern: Waiting \(delay)s before retry attempt \(attemptNumber + 1)...")
+                    Log.debug("⏳ OrchestratorPattern: Waiting \(delay)s before retry attempt \(attemptNumber + 1)...")
                     try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 }
             }
@@ -948,7 +823,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
                 
                 // Check if result indicates success
                 if result.success {
-                    print("✅ OrchestratorPattern: Subtask completed by '\(selectedAgent.name)'")
+                    Log.debug("✅ OrchestratorPattern: Subtask completed by '\(selectedAgent.name)'")
                     
                     // Emit subtask completed event
                     if let tracker = progressTracker {
@@ -959,7 +834,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
                 } else {
                     // Result indicates failure but no exception thrown
                     let errorMessage = result.error ?? "Unknown error"
-                    print("⚠️ OrchestratorPattern: Subtask failed: \(errorMessage)")
+                    Log.warn("⚠️ OrchestratorPattern: Subtask failed: \(errorMessage)")
                     
                     // Record retry attempt
                     let retryAttempt = RetryAttempt(
@@ -985,7 +860,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
             } catch {
                 // Exception thrown during execution
                 let errorMessage = error.localizedDescription
-                print("❌ OrchestratorPattern: Subtask execution threw error: \(errorMessage)")
+                Log.error("❌ OrchestratorPattern: Subtask execution threw error: \(errorMessage)")
                 
                 // Record retry attempt
                 let retryAttempt = RetryAttempt(
@@ -1239,7 +1114,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         let isValid = await validateAnswer(synthesizedAnswer, originalQuestion: originalQuestion)
         
         if !isValid {
-            print("⚠️ OrchestratorPattern: Synthesized answer does not address the question, refining...")
+            Log.warn("⚠️ OrchestratorPattern: Synthesized answer does not address the question, refining...")
             // Refine the answer
             let refinedAnswer = try await refineAnswer(
                 originalQuestion: originalQuestion,
@@ -1259,7 +1134,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         agents: [any Agent],
         context: AgentContext
     ) async throws -> AgentResult {
-        print("⚠️ OrchestratorPattern: Using fallback capability-based matching")
+        Log.warn("⚠️ OrchestratorPattern: Using fallback capability-based matching")
         
         let relevantAgents = agents.filter { agent in
             !task.requiredCapabilities.isDisjoint(with: agent.capabilities) ||
@@ -1331,7 +1206,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
             if taskTokens > maxTokensForPrompt {
                 let maxChars = maxTokensForPrompt * 4
                 taskDescription = String(taskDescription.prefix(maxChars)) + "\n\n[Prompt truncated due to length]"
-                print("⚠️ OrchestratorPattern: Truncated \(isSynthesis ? "synthesis" : "analysis") prompt from \(taskTokens) to ~\(maxTokensForPrompt) tokens")
+                Log.warn("⚠️ OrchestratorPattern: Truncated \(isSynthesis ? "synthesis" : "analysis") prompt from \(taskTokens) to ~\(maxTokensForPrompt) tokens")
             }
             
             // Final safety check - ensure it doesn't exceed 4096 tokens
@@ -1339,7 +1214,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
             if finalTokens > 4096 {
                 let maxChars = 3500 * 4 // Reserve aggressively
                 taskDescription = String(taskDescription.prefix(maxChars)) + "\n\n[Prompt truncated due to context window limits]"
-                print("⚠️ OrchestratorPattern: Final truncation - reduced to ~3500 tokens to fit 4096 limit")
+                Log.warn("⚠️ OrchestratorPattern: Final truncation - reduced to ~3500 tokens to fit 4096 limit")
             }
             
             return taskDescription
@@ -1353,7 +1228,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
             let maxChars = availableForTask * 4 // Rough char-to-token conversion
             let truncated = String(taskDescription.prefix(maxChars))
             taskDescription = truncated + "\n\n[Message truncated due to length. Full content available in conversation history.]"
-            print("⚠️ OrchestratorPattern: Truncated task description from \(taskTokens) to ~\(availableForTask) tokens")
+            Log.warn("⚠️ OrchestratorPattern: Truncated task description from \(taskTokens) to ~\(availableForTask) tokens")
         }
         
         var prompt = "Task: \(taskDescription)\n\n"
@@ -1464,7 +1339,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         // Final token check - truncate entire prompt if still too long
         let finalPromptTokens = await tokenCounter.countTokens(prompt)
         if finalPromptTokens > availableForContent {
-            print("⚠️ OrchestratorPattern: Prompt still exceeds budget (\(finalPromptTokens) > \(availableForContent)), truncating...")
+            Log.warn("⚠️ OrchestratorPattern: Prompt still exceeds budget (\(finalPromptTokens) > \(availableForContent)), truncating...")
             let maxChars = availableForContent * 4
             prompt = String(prompt.prefix(maxChars)) + "\n\n[Prompt truncated due to length]"
         }
@@ -1549,7 +1424,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         let totalEstimate = baseInputTokens + estimatedResponseTokens + toolCallTokens + complexityOverhead
         
-        print("📊 OrchestratorPattern: Single-agent estimate - Input: \(baseInputTokens), Response: \(estimatedResponseTokens), Tools: \(toolCallTokens), Overhead: \(complexityOverhead), Total: \(totalEstimate)")
+        Log.debug("📊 OrchestratorPattern: Single-agent estimate - Input: \(baseInputTokens), Response: \(estimatedResponseTokens), Tools: \(toolCallTokens), Overhead: \(complexityOverhead), Total: \(totalEstimate)")
         
         return totalEstimate
     }
@@ -1591,8 +1466,8 @@ public struct OrchestratorPattern: OrchestrationPattern {
     ///   - task: The task to evaluate
     ///   - context: The current context
     /// - Returns: Tuple of (shouldDelegate, reason)
-    private func shouldDelegateWithReason(task: AgentTask, context: AgentContext) async throws -> (Bool, String?) {
-        let result = try await shouldDelegateInternal(task: task, context: context)
+    private func shouldDelegateWithReason(task: AgentTask, context: AgentContext, agents: [any Agent]) async throws -> (Bool, String?) {
+        let result = try await shouldDelegateInternal(task: task, context: context, agents: agents)
         return (result.shouldDelegate, result.reason)
     }
     
@@ -1601,20 +1476,27 @@ public struct OrchestratorPattern: OrchestrationPattern {
     ///   - task: The task to evaluate
     ///   - context: The current context
     /// - Returns: true if task should be delegated, false if coordinator should respond directly
-    private func shouldDelegate(task: AgentTask, context: AgentContext) async throws -> Bool {
-        let result = try await shouldDelegateInternal(task: task, context: context)
+    private func shouldDelegate(task: AgentTask, context: AgentContext, agents: [any Agent]) async throws -> Bool {
+        let result = try await shouldDelegateInternal(task: task, context: context, agents: agents)
         return result.shouldDelegate
     }
     
     /// Internal method that returns both decision and reason
-    private func shouldDelegateInternal(task: AgentTask, context: AgentContext) async throws -> (shouldDelegate: Bool, reason: String?) {
-        print("🤔 OrchestratorPattern: Evaluating delegation decision for task '\(task.description.prefix(50))...'")
+    private func shouldDelegateInternal(task: AgentTask, context: AgentContext, agents: [any Agent]) async throws -> (shouldDelegate: Bool, reason: String?) {
+        Log.debug("🤔 OrchestratorPattern: Evaluating delegation decision for task '\(task.description.prefix(50))...'")
+
+        let availableCapabilities = Set(agents.flatMap { $0.capabilities })
+        let hasWebSearch = availableCapabilities.contains(.webSearch)
+        let hasFileReader = availableCapabilities.contains(.fileReading)
+        let hasCodeAnalysis = availableCapabilities.contains(.codeAnalysis)
+        let hasDataAnalysis = availableCapabilities.contains(.dataAnalysis)
 
         let hasCurrentFiles = (context.metadata["currentFileReferences"]?.isEmpty == false)
         let hasFiles = hasCurrentFiles || !context.fileReferences.isEmpty
         if let forcedDecision = DelegationDecider().forcedDecision(
             taskDescription: task.description,
-            hasFiles: hasFiles
+            hasFiles: hasFiles,
+            availableCapabilities: availableCapabilities
         ) {
             return (forcedDecision.shouldDelegate, forcedDecision.reason)
         }
@@ -1640,18 +1522,31 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         if !context.fileReferences.isEmpty {
             decisionPrompt += "\n\nAttached files: \(context.fileReferences.count) file(s)"
-            decisionPrompt += "\n- Files require specialized file reading capabilities"
+            if hasFileReader {
+                decisionPrompt += "\n- Files require specialized file reading capabilities"
+            }
         }
         
-        decisionPrompt += """
-            
-            Rules:
-            - DIRECT if: greeting, simple question, basic conversation, simple follow-up
-            - DELEGATE if: needs file/web/code/data tools, complex multi-step task, requires specialized capabilities, files are attached
-            
-            Respond with ONLY: "DIRECT" or "DELEGATE"
-            If DIRECT, provide your response. If DELEGATE, explain why.
-            """
+        var delegateRule = "DELEGATE if: complex multi-step task, requires specialized capabilities"
+        var specializedTools: [String] = []
+        if hasFileReader { specializedTools.append("file") }
+        if hasWebSearch { specializedTools.append("web") }
+        if hasCodeAnalysis { specializedTools.append("code") }
+        if hasDataAnalysis { specializedTools.append("data") }
+        
+        if !specializedTools.isEmpty {
+            delegateRule = "DELEGATE if: needs \(specializedTools.joined(separator: "/")) tools, \(delegateRule.replacingOccurrences(of: "DELEGATE if: ", with: ""))"
+        }
+        
+        if !context.fileReferences.isEmpty {
+            delegateRule += ", files are attached"
+        }
+
+        decisionPrompt += "\n\nRules:\n"
+        decisionPrompt += "- DIRECT if: greeting, simple question, basic conversation, simple follow-up\n"
+        decisionPrompt += "- " + delegateRule + "\n\n"
+        decisionPrompt += "Respond with ONLY: \"DIRECT\" or \"DELEGATE\"\n"
+        decisionPrompt += "If DIRECT, provide your response. If DELEGATE, explain why."
         
         let decisionTask = AgentTask(
             description: decisionPrompt,
@@ -1671,9 +1566,9 @@ public struct OrchestratorPattern: OrchestrationPattern {
         // Parse decision from response
         let shouldDelegate = parseDelegationDecision(from: decisionText)
         
-        print("🤔 OrchestratorPattern: Decision result - \(shouldDelegate ? "DELEGATE" : "DIRECT")")
+        Log.debug("🤔 OrchestratorPattern: Decision result - \(shouldDelegate ? "DELEGATE" : "DIRECT")")
         if shouldDelegate {
-            print("   Reason: \(decisionResult.content)")
+            Log.debug("   Reason: \(decisionResult.content)")
         }
         
         return (shouldDelegate, shouldDelegate ? decisionResult.content : nil)
@@ -1731,7 +1626,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         context: AgentContext,
         progressTracker: OrchestrationProgressTracker?
     ) async throws -> AgentResult {
-        print("💬 OrchestratorPattern: Coordinator responding directly to task")
+        Log.debug("💬 OrchestratorPattern: Coordinator responding directly to task")
         
         let responseStartTime = Date()
         
@@ -1805,9 +1700,9 @@ public struct OrchestratorPattern: OrchestrationPattern {
         )
         
         if totalSVDBSavings > 0 {
-            print("📊 OrchestratorPattern: Direct response - Total: \(totalTokens), SVDB Savings: \(totalSVDBSavings), Net Total: \(totalTokens - totalSVDBSavings), Overall Savings: \(String(format: "%.1f", savingsPercentage))%")
+            Log.debug("📊 OrchestratorPattern: Direct response - Total: \(totalTokens), SVDB Savings: \(totalSVDBSavings), Net Total: \(totalTokens - totalSVDBSavings), Overall Savings: \(String(format: "%.1f", savingsPercentage))%")
         } else {
-            print("📊 OrchestratorPattern: Direct response - Total: \(totalTokens), Savings: \(String(format: "%.1f", savingsPercentage))%")
+            Log.debug("📊 OrchestratorPattern: Direct response - Total: \(totalTokens), Savings: \(String(format: "%.1f", savingsPercentage))%")
         }
         
         // Store token usage in context metadata
@@ -1852,7 +1747,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
               let conversationId = UUID(uuidString: conversationIdStr),
               let messageIdStr = context.metadata["messageId"],
               let messageId = UUID(uuidString: messageIdStr) else {
-            print("⚠️ OrchestratorPattern: Cannot create checkpoint - missing conversationId or messageId in context")
+            Log.warn("⚠️ OrchestratorPattern: Cannot create checkpoint - missing conversationId or messageId in context")
             return
         }
         
@@ -1869,9 +1764,9 @@ public struct OrchestratorPattern: OrchestrationPattern {
             )
             
             try await callback(checkpoint)
-            print("✅ OrchestratorPattern: Checkpoint created at \(phase.rawValue) phase")
+            Log.debug("✅ OrchestratorPattern: Checkpoint created at \(phase.rawValue) phase")
         } catch {
-            print("⚠️ OrchestratorPattern: Failed to create or save checkpoint: \(error)")
+            Log.warn("⚠️ OrchestratorPattern: Failed to create or save checkpoint: \(error)")
         }
     }
     
@@ -1899,7 +1794,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
                     coordinator: coordinator
                 )
                 
-                print("🔀 OrchestratorPattern: Branch evaluation - Condition met: \(evaluation.conditionMet), Confidence: \(evaluation.confidence)")
+                Log.debug("🔀 OrchestratorPattern: Branch evaluation - Condition met: \(evaluation.conditionMet), Confidence: \(evaluation.confidence)")
                 
                 if !evaluation.subtasksToExecute.isEmpty {
                     newSubtasks.append(contentsOf: evaluation.subtasksToExecute)

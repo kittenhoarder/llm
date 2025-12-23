@@ -13,7 +13,7 @@ struct ConversationListView: View {
     @ObservedObject var viewModel: ChatViewModel
     @State private var hoveredId: UUID?
     @State private var editingTitle = ""
-    @AppStorage("preferredColorScheme") private var preferredColorScheme: String = "dark"
+    @AppStorage(UserDefaultsKey.preferredColorScheme) private var preferredColorScheme: String = "dark"
     @Environment(\.colorScheme) private var systemColorScheme
     
     private var effectiveColorScheme: ColorScheme {

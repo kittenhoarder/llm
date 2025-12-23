@@ -7,68 +7,46 @@
 
 import Foundation
 
-/// Agent that performs data analysis and calculations
-///
-/// **Status**: ⚠️ Partially Functional
-/// - Requires data to be provided in task parameters or file references
-/// - Can analyze CSV and JSON files if file paths are provided in context
-/// - Performs statistical calculations, data summarization, and pattern identification
-/// - Limited functionality - needs data in parameters or file references
-///
-/// **Tool Wiring**: ⚠️ No tools wired - relies on data in task parameters or file references
-/// - TODO: Integrate with FileReaderAgent for automatic file reading
-/// - TODO: Add data processing tools (CSV parser, JSON parser, calculator, etc.)
 @available(macOS 26.0, iOS 26.0, *)
 public class DataAnalysisAgent: BaseAgent, @unchecked Sendable {
     public init() {
         super.init(
             id: AgentId.dataAnalysis,
             name: AgentName.dataAnalysis,
-            description: "Performs data analysis, calculations, and statistical operations on data structures like CSV, JSON, and numerical data.",
+            description: "Performs data analysis, calculations, and statistical operations on data structures like CSV, JSON, and numerical data found in the codebase.",
             capabilities: [.dataAnalysis],
-            tools: []
+            tools: [
+                CodebaseSearchTool(),
+                CodebaseGrepTool(),
+                CodebaseReadFileTool(),
+                CodebaseListFilesTool()
+            ]
         )
     }
     
     public override func process(task: AgentTask, context: AgentContext) async throws -> AgentResult {
-        // Get data from context or task parameters
-        let dataContent: String
-        
-        if let data = task.parameters["data"] {
-            dataContent = data
-        } else if let csvPath = context.fileReferences.first(where: { $0.hasSuffix(".csv") }) {
-            // CSV file referenced
-            dataContent = "CSV file: \(csvPath)"
-        } else if let jsonPath = context.fileReferences.first(where: { $0.hasSuffix(".json") }) {
-            // JSON file referenced
-            dataContent = "JSON file: \(jsonPath)"
-        } else {
-            // Try to extract data from task description
-            dataContent = task.description
-        }
-        
         // Build analysis prompt
-        let analysisPrompt = """
-        Analyze the following data:
+        let systemPrompt = """
+        You are an expert Data Analysis Agent. Your goal is to help the user analyze data and understand patterns.
         
-        \(dataContent)
+        You have access to any provided data files, and also to the indexed codebase via the following tools:
+        1. `codebase_semantic_search`: Use this for finding relevant data structures, constants, or data handling logic in the code.
+        2. `codebase_grep_search`: Use this to find specific data-related strings or patterns in the codebase.
+        3. `codebase_read_file`: Use this to see the full content of relevant code or data files.
+        4. `codebase_list_files`: Use this to explore directories for relevant data files.
         
-        User request: \(task.description)
+        Guidelines:
+        - ALWAYS prioritize using codebase tools to gather context about how data is structured or processed in this project.
+        - Focus on data analysis, visualization suggestions, and pattern identification.
+        - Provide high-quality insights based on the actual project implementation and data.
+        - If you need to understand the data schema, search the codebase for relevant model or struct definitions.
         
-        Perform the requested analysis, which may include:
-        - Statistical calculations
-        - Data summarization
-        - Pattern identification
-        - Trend analysis
-        - Data validation
-        - Any other data processing operations
-        
-        Provide clear, structured results.
+        Current Task: \(task.description)
         """
         
         // Get response from model
         let service = await modelService
-        let response = try await service.respond(to: analysisPrompt)
+        let response = try await service.respond(to: systemPrompt)
         
         // Update context
         var updatedContext = context

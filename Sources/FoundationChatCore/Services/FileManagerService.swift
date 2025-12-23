@@ -94,10 +94,10 @@ public actor FileManagerService {
             do {
                 let ragService = RAGService.shared
                 try await ragService.indexFile(attachment: attachment, conversationId: conversationId)
-                print("✅ RAGService: Successfully indexed file \(originalName)")
+                Log.debug("✅ RAGService: Successfully indexed file \(originalName)")
             } catch {
                 // Log error but don't fail file copy
-                print("⚠️ RAGService: Failed to index file \(originalName): \(error.localizedDescription)")
+                Log.warn("⚠️ RAGService: Failed to index file \(originalName): \(error.localizedDescription)")
             }
         }
         
@@ -138,7 +138,7 @@ public actor FileManagerService {
             try await ragService.deleteConversationIndexes(conversationId: conversationId)
         } catch {
             // Log error but continue with file deletion
-            print("⚠️ FileManagerService: Failed to delete RAG indexes for conversation \(conversationId): \(error.localizedDescription)")
+            Log.warn("⚠️ FileManagerService: Failed to delete RAG indexes for conversation \(conversationId): \(error.localizedDescription)")
         }
         
         // Delete entire conversation directory
@@ -175,4 +175,3 @@ public actor FileManagerService {
         return nil
     }
 }
-

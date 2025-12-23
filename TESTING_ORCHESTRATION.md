@@ -7,6 +7,7 @@
 2. Check "Use Coordinator" is **ON**
 3. Verify at least 2 agents are enabled (e.g., Web Search + File Reader)
 4. Check console for: `💬 useCoordinator: true`
+   - Note: in non-DEBUG builds, some debug logs are suppressed. Use a DEBUG build for full visibility.
 
 ### 2. Create New Conversation
 - Click "New Conversation" (Cmd+N) - **Important**: Must be a NEW conversation
@@ -110,5 +111,4 @@ if let state = orchestrationState {
 ### 10. Force Diagram to Show
 
 If diagram exists but is hidden, the "Show Orchestration" button should appear below assistant messages. Click it to reveal the diagram.
-
 

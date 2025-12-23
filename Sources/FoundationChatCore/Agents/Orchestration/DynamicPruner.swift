@@ -38,7 +38,7 @@ public actor DynamicPruner {
     ///   - tokenBudget: Optional token budget constraint
     /// - Returns: Pruned decomposition with removal rationales
     public func prune(_ decomposition: TaskDecomposition, tokenBudget: Int? = nil) -> PruningResult {
-        print("✂️ DynamicPruner: Starting pruning of \(decomposition.subtasks.count) subtasks...")
+        Log.debug("✂️ DynamicPruner: Starting pruning of \(decomposition.subtasks.count) subtasks...")
         
         var subtasks = decomposition.subtasks
         var removalRationales: [UUID: String] = [:]
@@ -126,7 +126,7 @@ public actor DynamicPruner {
             }
         }
         
-        print("✅ DynamicPruner: Pruned \(removedCount) subtasks, \(subtasks.count) remaining")
+        Log.debug("✅ DynamicPruner: Pruned \(removedCount) subtasks, \(subtasks.count) remaining")
         
         // Recalculate execution order
         let executionOrder = calculateExecutionOrder(subtasks: subtasks)
