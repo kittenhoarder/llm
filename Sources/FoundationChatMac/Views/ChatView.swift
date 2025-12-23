@@ -16,9 +16,9 @@ public struct ChatView: View {
     @State private var messageText = ""
     @State private var pendingAttachments: [FileAttachment] = []
     @FocusState private var isInputFocused: Bool
-    @AppStorage("fontSizeAdjustment") private var fontSizeAdjustment: Double = 14
-    @AppStorage("useContextualConversations") private var useContextualConversations: Bool = true
-    @AppStorage("preferredColorScheme") private var preferredColorScheme: String = "dark"
+    @AppStorage(UserDefaultsKey.fontSizeAdjustment) private var fontSizeAdjustment: Double = 14
+    @AppStorage(UserDefaultsKey.useContextualConversations) private var useContextualConversations: Bool = true
+    @AppStorage(UserDefaultsKey.preferredColorScheme) private var preferredColorScheme: String = "dark"
     @Environment(\.colorScheme) private var systemColorScheme
     
     private var effectiveColorScheme: ColorScheme {
@@ -368,14 +368,17 @@ struct MessageView: View {
                 
                 // Message bubble
                 if !message.content.isEmpty {
-                    Text(message.content)
-                        .font(Theme.messageFont(size: fontSize))
-                        .foregroundColor(message.role == .user ? .white : Theme.textPrimary(for: colorScheme))
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(message.role == .user ? Theme.userBubble(for: colorScheme) : Theme.assistantBubble(for: colorScheme))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    MarkdownMessageView(
+                        content: message.content,
+                        fontSize: fontSize,
+                        role: message.role,
+                        colorScheme: colorScheme
+                    )
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(message.role == .user ? Theme.userBubble(for: colorScheme) : Theme.assistantBubble(for: colorScheme))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 
                 // Statistics and action buttons below the message

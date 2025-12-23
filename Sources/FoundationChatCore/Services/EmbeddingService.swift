@@ -33,7 +33,7 @@ public actor EmbeddingService {
         if self.embedding == nil {
             // Note: NLEmbedding.sentenceEmbedding is available on newer iOS/macOS versions
             // For now, we'll use word embeddings which are more widely available
-            print("⚠️ EmbeddingService: Could not load English embedding model")
+            Log.warn("⚠️ EmbeddingService: Could not load English embedding model")
         }
     }
     

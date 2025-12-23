@@ -15,7 +15,7 @@ struct AgentConfigurationView: View {
     @State private var availableAgents: [AgentInfo] = []
     let conversationType: ConversationType
     let onConfigure: (AgentConfiguration) -> Void
-    @AppStorage("preferredColorScheme") private var preferredColorScheme: String = "dark"
+    @AppStorage(UserDefaultsKey.preferredColorScheme) private var preferredColorScheme: String = "dark"
     @Environment(\.colorScheme) private var systemColorScheme
     
     struct AgentInfo: Identifiable {
@@ -46,11 +46,9 @@ struct AgentConfigurationView: View {
                 }
                 .buttonStyle(.bordered)
                 Button("Done") {
-                    // Always use orchestrator pattern (coordinator)
-                    let useCoordinator = UserDefaults.standard.bool(forKey: "useCoordinator")
                     let config = AgentConfiguration(
                         selectedAgents: Array(selectedAgents),
-                        orchestrationPattern: useCoordinator ? .orchestrator : .orchestrator
+                        orchestrationPattern: .orchestrator
                     )
                     onConfigure(config)
                     isPresented = false
@@ -110,12 +108,12 @@ struct AgentConfigurationView: View {
     }
     
     private func loadAgents() async {
-        print("🔧 AgentConfigurationView: loadAgents() starting...")
-        print("🔧 Using shared AgentService...")
+        Log.debug("🔧 AgentConfigurationView: loadAgents() starting...")
+        Log.debug("🔧 Using shared AgentService...")
         let service = AgentService.shared
-        print("🔧 AgentService.shared obtained, calling getAvailableAgents()...")
+        Log.debug("🔧 AgentService.shared obtained, calling getAvailableAgents()...")
         let agents = await service.getAvailableAgents()
-        print("🔧 Got \(agents.count) agents")
+        Log.debug("🔧 Got \(agents.count) agents")
         
         availableAgents = agents.map { agent in
             AgentInfo(
@@ -137,7 +135,16 @@ struct AgentConfigurationView: View {
     }
     
     private func loadEnabledAgentIds() -> [UUID] {
-        guard let jsonString = UserDefaults.standard.string(forKey: "enabledAgentIds"),
+        // Try to load from new enabledAgentNames first
+        if let jsonString = UserDefaults.standard.string(forKey: UserDefaultsKey.enabledAgentNames) {
+            let names = jsonString.split(separator: ",").map { String($0) }
+            return availableAgents
+                .filter { names.contains($0.name) }
+                .map { $0.id }
+        }
+        
+        // Fallback to legacy ID-based key
+        guard let jsonString = UserDefaults.standard.string(forKey: UserDefaultsKey.enabledAgentIds),
               !jsonString.isEmpty else {
             return []
         }
@@ -146,8 +153,6 @@ struct AgentConfigurationView: View {
         return idStrings.compactMap { UUID(uuidString: $0) }
     }
 }
-
-
 
 
 

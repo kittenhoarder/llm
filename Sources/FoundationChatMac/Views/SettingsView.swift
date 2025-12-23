@@ -13,20 +13,26 @@ struct SettingsView: View {
     @ObservedObject var viewModel: ChatViewModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var systemColorScheme
-    @AppStorage("fontSizeAdjustment") private var fontSizeAdjustment: Double = 14
-    @AppStorage("preferredColorScheme") private var preferredColorScheme: String = "dark"
-    @AppStorage("useContextualConversations") private var useContextualConversations: Bool = true
-    @AppStorage("serpapiApiKey") private var serpapiApiKey: String = ""
-    @AppStorage("enabledAgentNames") private var enabledAgentNamesJSON: String = ""
+    @AppStorage(UserDefaultsKey.fontSizeAdjustment) private var fontSizeAdjustment: Double = 14
+    @AppStorage(UserDefaultsKey.preferredColorScheme) private var preferredColorScheme: String = "dark"
+    @AppStorage(UserDefaultsKey.useContextualConversations) private var useContextualConversations: Bool = true
+    @AppStorage(UserDefaultsKey.serpapiApiKey) private var serpapiApiKey: String = ""
+    @AppStorage(UserDefaultsKey.enabledAgentNames) private var enabledAgentNamesJSON: String = ""
     // Legacy support: also check old enabledAgentIds key for migration
-    @AppStorage("enabledAgentIds") private var enabledAgentIdsJSON: String = ""
-    @AppStorage("useCoordinator") private var useCoordinator: Bool = true
-    @AppStorage("smartDelegation") private var smartDelegation: Bool = true
-    @AppStorage("useRAG") private var useRAG: Bool = true
-    @AppStorage("ragChunkSize") private var ragChunkSize: Int = 1000
-    @AppStorage("ragTopK") private var ragTopK: Int = 5
+    @AppStorage(UserDefaultsKey.enabledAgentIds) private var enabledAgentIdsJSON: String = ""
+    @AppStorage(UserDefaultsKey.useCoordinator) private var useCoordinator: Bool = true
+    @AppStorage(UserDefaultsKey.smartDelegation) private var smartDelegation: Bool = true
+    @AppStorage(UserDefaultsKey.useRAG) private var useRAG: Bool = true
+    @AppStorage(UserDefaultsKey.ragChunkSize) private var ragChunkSize: Int = 1000
+    @AppStorage(UserDefaultsKey.ragTopK) private var ragTopK: Int = 5
     @State private var showClearDataConfirmation = false
     @State private var availableAgents: [AgentInfo] = []
+    
+    // Code Analysis state
+    @State private var codeAnalysisIndexingState: LEANNBridgeService.IndexingState = .notIndexed
+    @State private var isIndexingCodebase = false
+    @State private var showIndexingError = false
+    @State private var indexingErrorMessage = ""
     
     struct AgentInfo: Identifiable {
         let id: UUID
@@ -127,98 +133,17 @@ struct SettingsView: View {
                         }
                     }
                     
-                    // Agents & Tools section
-                    SettingsSection(title: "Agents & Tools", colorScheme: effectiveColorScheme) {
-                        VStack(alignment: .leading, spacing: 16) {
-                            Toggle(isOn: Binding(
-                                get: { useCoordinator },
-                                set: { newValue in
-                                    useCoordinator = newValue
-                                    // Validate agent selection when toggling
-                                    validateAgentSelection()
-                                }
-                            )) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Use Coordinator")
-                                        .font(Theme.titleFont)
-                                        .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
-                                    Text(useCoordinator 
-                                        ? "Coordinator-based orchestration (experimental)" 
-                                        : "Direct single-agent conversations (recommended)")
-                                        .font(Theme.captionFont)
-                                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
-                                }
-                            }
-                            
-                            // Smart Delegation toggle (only shown when coordinator is enabled)
-                            if useCoordinator {
-                                Divider()
-                                    .background(Theme.border(for: effectiveColorScheme))
-                                
-                                Toggle(isOn: $smartDelegation) {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text("Smart Delegation")
-                                            .font(Theme.titleFont)
-                                            .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
-                                        Text(smartDelegation 
-                                            ? "Coordinator decides when to delegate vs. respond directly (recommended)" 
-                                            : "Always delegate tasks to specialized agents")
-                                            .font(Theme.captionFont)
-                                            .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
-                                    }
-                                }
-                            }
-                            
-                            Divider()
-                                .background(Theme.border(for: effectiveColorScheme))
-                            
-                            Text("Available Agents")
-                                .font(Theme.titleFont)
-                                .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
-                            
-                            ForEach(availableAgents) { agent in
-                                Toggle(isOn: Binding(
-                                    get: { isAgentEnabled(agent.id) },
-                                    set: { isOn in
-                                        setAgentEnabled(agent.id, enabled: isOn)
-                                        // Validate after change
-                                        validateAgentSelection()
-                                    }
-                                )) {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(agent.name)
-                                            .font(.headline)
-                                        Text(agent.description)
-                                            .font(.caption)
-                                            .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
-                                    }
-                                }
-                            }
-                            
-                            // Validation message
-                            if !useCoordinator {
-                                let enabledCount = availableAgents.filter { isAgentEnabled($0.id) }.count
-                                if enabledCount == 0 {
-                                    Text("⚠️ Please select at least one agent")
-                                        .font(.caption)
-                                        .foregroundColor(.orange)
-                                        .padding(.top, 4)
-                                } else if enabledCount > 1 {
-                                    Text("ℹ️ Single-agent mode: Only the first selected agent will be used")
-                                        .font(.caption)
-                                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
-                                        .padding(.top, 4)
-                                }
-                            }
-                            
-                            if useCoordinator {
-                                Text("Note: Coordinator is automatically included when orchestrator mode is enabled.")
-                                    .font(.caption)
-                                    .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
-                                    .padding(.top, 4)
-                            }
-                        }
-                    }
+                    AgentsToolsSectionView(
+                        useCoordinator: $useCoordinator,
+                        smartDelegation: $smartDelegation,
+                        availableAgents: availableAgents,
+                        effectiveColorScheme: effectiveColorScheme,
+                        isAgentEnabled: isAgentEnabled,
+                        setAgentEnabled: setAgentEnabled,
+                        validateAgentSelection: validateAgentSelection,
+                        codeAnalysisIndexingState: $codeAnalysisIndexingState,
+                        isIndexingCodebase: $isIndexingCodebase
+                    )
                     
                     // Conversation section
                     SettingsSection(title: "Conversation", colorScheme: effectiveColorScheme) {
@@ -422,15 +347,15 @@ struct SettingsView: View {
                 do {
                     // Clear all SVDB data (this clears everything including orphaned collections)
                     try await ragService.clearAllData()
-                    print("✅ Cleared all SVDB/RAG data")
+                    Log.info("✅ Cleared all SVDB/RAG data")
                 } catch {
-                    print("⚠️ Warning: Could not clear all RAG data: \(error)")
+                    Log.warn("⚠️ Warning: Could not clear all RAG data: \(error)")
                     // Fallback: try to clear per conversation
                     for conversation in conversations {
                         do {
                             try await ragService.deleteConversationIndexes(conversationId: conversation.id)
                         } catch {
-                            print("⚠️ Warning: Could not delete RAG indexes for conversation \(conversation.id): \(error)")
+                            Log.warn("⚠️ Warning: Could not delete RAG indexes for conversation \(conversation.id): \(error)")
                         }
                     }
                 }
@@ -445,8 +370,14 @@ struct SettingsView: View {
                     try fileManager.removeItem(at: baseDir)
                     // Recreate empty directory
                     try fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
-                    print("✅ Cleared file attachments directory")
+                    // Recreate empty directory
+                    try fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+                    Log.info("✅ Cleared file attachments directory")
                 }
+                
+                // Clear LEANN Code Analysis index
+                await LEANNBridgeService.shared.clearIndex()
+                Log.info("✅ Cleared LEANN Code Analysis index")
                 
                 // Clear UI state in ChatViewModel
                 await MainActor.run {
@@ -457,9 +388,9 @@ struct SettingsView: View {
                     viewModel.agentNameByMessage = [:]
                 }
                 
-                print("✅ All data cleared successfully")
+                Log.info("✅ All data cleared successfully")
             } catch {
-                print("❌ Error clearing data: \(error)")
+                Log.error("❌ Error clearing data: \(error)")
                 // Show error to user
                 await MainActor.run {
                     // Could add an error alert here if needed
@@ -488,9 +419,11 @@ struct SettingsView: View {
             )
         }
         
-        // Initialize enabled agents if empty (default: all user-selectable agents enabled)
-        // Store agent names, not IDs, so they persist across app restarts
-        if enabledAgentNamesJSON.isEmpty {
+        // Initialize enabled agents if not set (first run)
+        // We check for existence of the key directly because an empty string is a valid state (user disabled all agents)
+        let hasInitializedAgents = UserDefaults.standard.object(forKey: UserDefaultsKey.enabledAgentNames) != nil
+        
+        if !hasInitializedAgents {
             // Check for legacy enabledAgentIds and migrate
             if !enabledAgentIdsJSON.isEmpty {
                 // Migrate from IDs to names
@@ -573,3 +506,373 @@ struct SettingsSection<Content: View>: View {
     }
 }
 
+@available(macOS 26.0, *)
+private struct AgentsToolsSectionView: View {
+    @Binding var useCoordinator: Bool
+    @Binding var smartDelegation: Bool
+    let availableAgents: [SettingsView.AgentInfo]
+    let effectiveColorScheme: ColorScheme
+    let isAgentEnabled: (UUID) -> Bool
+    let setAgentEnabled: (UUID, Bool) -> Void
+    let validateAgentSelection: () -> Void
+    @Binding var codeAnalysisIndexingState: LEANNBridgeService.IndexingState
+    @Binding var isIndexingCodebase: Bool
+    
+    var body: some View {
+        SettingsSection(title: "Agents & Tools", colorScheme: effectiveColorScheme) {
+            VStack(alignment: .leading, spacing: 16) {
+                Toggle(isOn: Binding(
+                    get: { useCoordinator },
+                    set: { newValue in
+                        useCoordinator = newValue
+                        validateAgentSelection()
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Use Coordinator")
+                            .font(Theme.titleFont)
+                            .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
+                        Text(useCoordinator
+                             ? "Coordinator-based orchestration (experimental)"
+                             : "Direct single-agent conversations (recommended)")
+                            .font(Theme.captionFont)
+                            .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
+                    }
+                }
+                
+                if useCoordinator {
+                    Divider()
+                        .background(Theme.border(for: effectiveColorScheme))
+                    
+                    Toggle(isOn: $smartDelegation) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Smart Delegation")
+                                .font(Theme.titleFont)
+                                .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
+                            Text(smartDelegation
+                                 ? "Coordinator decides when to delegate vs. respond directly (recommended)"
+                                 : "Always delegate tasks to specialized agents")
+                                .font(Theme.captionFont)
+                                .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
+                        }
+                    }
+                }
+                
+                Divider()
+                    .background(Theme.border(for: effectiveColorScheme))
+                
+                Text("Available Agents")
+                    .font(Theme.titleFont)
+                    .foregroundColor(Theme.textPrimary(for: effectiveColorScheme))
+                
+                ForEach(availableAgents, id: \.id) { agent in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(isOn: Binding(
+                            get: { isAgentEnabled(agent.id) },
+                            set: { isOn in
+                                setAgentEnabled(agent.id, isOn)
+                                validateAgentSelection()
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(agent.name)
+                                    .font(.headline)
+                                Text(agent.description)
+                                    .font(.caption)
+                                    .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
+                            }
+                        }
+                        
+                        if agent.name == AgentName.codeAnalysis {
+                            CodebasePickerInline(
+                                isEnabled: isAgentEnabled(agent.id),
+                                indexingState: $codeAnalysisIndexingState,
+                                isIndexing: $isIndexingCodebase,
+                                colorScheme: effectiveColorScheme
+                            )
+                        }
+                    }
+                }
+                
+                if !useCoordinator {
+                    let enabledCount = availableAgents.filter { isAgentEnabled($0.id) }.count
+                    if enabledCount == 0 {
+                        Text("⚠️ Please select at least one agent")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .padding(.top, 4)
+                    } else if enabledCount > 1 {
+                        Text("ℹ️ Single-agent mode: Only the first selected agent will be used")
+                            .font(.caption)
+                            .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
+                            .padding(.top, 4)
+                    }
+                }
+                
+                if useCoordinator {
+                    Text("Note: Coordinator is automatically included when orchestrator mode is enabled.")
+                        .font(.caption)
+                        .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
+                        .padding(.top, 4)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Inline Codebase Picker for Code Analysis
+
+@available(macOS 26.0, *)
+struct CodebasePickerInline: View {
+    let isEnabled: Bool
+    @Binding var indexingState: LEANNBridgeService.IndexingState
+    @Binding var isIndexing: Bool
+    let colorScheme: ColorScheme
+    
+    @State private var showError = false
+    @State private var errorMessage = ""
+    @AppStorage(UserDefaultsKey.leannRootPath) private var leannRootPath: String = ""
+    @State private var resolvedLeannRootPath: String?
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Status and actions row
+            HStack(spacing: 12) {
+                // Status indicator
+                indexStatusView
+                
+                Spacer()
+                
+                // Select/Change button
+                Button(action: selectCodebase) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder.badge.plus")
+                            .font(.system(size: 11))
+                        Text(hasIndex ? "Change" : "Select Codebase")
+                            .font(.system(size: 11))
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(isEnabled ? Theme.accent(for: colorScheme) : Theme.textSecondary(for: colorScheme).opacity(0.5))
+                .disabled(!isEnabled || isIndexing)
+                
+                // Clear button (only when indexed)
+                if hasIndex && isEnabled {
+                    Button(action: clearIndex) {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.red.opacity(0.7))
+                    .disabled(isIndexing)
+                }
+            }
+            .padding(.leading, 28) // Indent to align with toggle label
+            
+            // Indexing progress
+            if isIndexing {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .scaleEffect(0.5)
+                    Text("Indexing...")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.textSecondary(for: colorScheme))
+                }
+                .padding(.leading, 28)
+            }
+            
+            Divider()
+                .background(Theme.border(for: colorScheme))
+                .padding(.leading, 28)
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text("LEANN Installation (Optional)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary(for: colorScheme))
+
+                if let resolvedLeannRootPath {
+                    Text("Resolved: \(resolvedLeannRootPath)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(Theme.textSecondary(for: colorScheme))
+                        .lineLimit(1)
+                } else {
+                    Text("Resolved: Not found")
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                }
+                
+                HStack(spacing: 8) {
+                    TextField("Path to leann_poc directory", text: $leannRootPath)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11, design: .monospaced))
+                        .padding(6)
+                        .background(Theme.surfaceElevated(for: colorScheme))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    
+                    Button("Choose…", action: selectLeannRoot)
+                        .buttonStyle(.plain)
+                        .foregroundColor(isEnabled ? Theme.accent(for: colorScheme) : Theme.textSecondary(for: colorScheme).opacity(0.5))
+                        .disabled(!isEnabled)
+                    
+                    if !leannRootPath.isEmpty {
+                        Button("Clear", action: clearLeannRoot)
+                            .buttonStyle(.plain)
+                            .foregroundColor(.red.opacity(0.7))
+                            .disabled(!isEnabled)
+                    }
+                }
+                
+                Text("Overrides the bundled/default LEANN location if set.")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.textSecondary(for: colorScheme))
+            }
+            .padding(.leading, 28)
+        }
+        .opacity(isEnabled ? 1.0 : 0.5)
+        .task {
+            await loadIndexState()
+            await loadLeannConfiguration()
+        }
+        .onChange(of: leannRootPath) { _, _ in
+            Task {
+                let service = LEANNBridgeService.shared
+                await service.reloadConfiguration()
+                await loadLeannConfiguration()
+            }
+        }
+        .alert("Indexing Error", isPresented: $showError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage)
+        }
+    }
+    
+    private var hasIndex: Bool {
+        if case .indexed = indexingState {
+            return true
+        }
+        return false
+    }
+    
+    @ViewBuilder
+    private var indexStatusView: some View {
+        switch indexingState {
+        case .notIndexed:
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.system(size: 10))
+                    .foregroundColor(isEnabled ? .orange : Theme.textSecondary(for: colorScheme))
+                Text("No codebase indexed")
+                    .font(.system(size: 10))
+                    .foregroundColor(isEnabled ? .orange : Theme.textSecondary(for: colorScheme))
+            }
+            
+        case .indexing(let progress):
+            HStack(spacing: 4) {
+                ProgressView()
+                    .scaleEffect(0.5)
+                Text(progress)
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.textSecondary(for: colorScheme))
+            }
+            
+        case .indexed(let fileCount, let path):
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(.green)
+                Text("\(fileCount) files")
+                    .font(.system(size: 10))
+                    .foregroundColor(.green)
+                Text("•")
+                    .font(.system(size: 8))
+                    .foregroundColor(Theme.textSecondary(for: colorScheme))
+                Text((path as NSString).lastPathComponent)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(Theme.textSecondary(for: colorScheme))
+                    .lineLimit(1)
+            }
+            
+        case .error(let message):
+            HStack(spacing: 4) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(.red)
+                Text(message)
+                    .font(.system(size: 10))
+                    .foregroundColor(.red)
+                    .lineLimit(1)
+            }
+        }
+    }
+    
+    private func loadIndexState() async {
+        let service = LEANNBridgeService.shared
+        indexingState = await service.indexingState
+    }
+    
+    private func loadLeannConfiguration() async {
+        let service = LEANNBridgeService.shared
+        resolvedLeannRootPath = await service.getResolvedLeannRootPath()
+    }
+    
+    private func selectCodebase() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select your codebase directory"
+        panel.prompt = "Index"
+        
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            
+            Task {
+                await indexCodebase(url: url)
+            }
+        }
+    }
+    
+    private func indexCodebase(url: URL) async {
+        isIndexing = true
+        indexingState = .indexing(progress: "Indexing...")
+        
+        do {
+            let service = LEANNBridgeService.shared
+            let fileCount = try await service.indexCodebase(url: url)
+            indexingState = .indexed(fileCount: fileCount, path: url.path)
+        } catch {
+            indexingState = .error(error.localizedDescription)
+            errorMessage = error.localizedDescription
+            showError = true
+        }
+        
+        isIndexing = false
+    }
+    
+    private func clearIndex() {
+        Task {
+            let service = LEANNBridgeService.shared
+            await service.clearIndex()
+            indexingState = .notIndexed
+        }
+    }
+    
+    private func selectLeannRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select the leann_poc directory"
+        panel.prompt = "Choose"
+        
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            leannRootPath = url.path
+        }
+    }
+    
+    private func clearLeannRoot() {
+        leannRootPath = ""
+    }
+}

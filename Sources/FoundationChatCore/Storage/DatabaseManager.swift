@@ -67,32 +67,32 @@ public class DatabaseManager {
     /// Initialize the database manager
     /// - Parameter dbPath: Path to the database file (defaults to app support directory)
     public init(dbPath: String? = nil) throws {
-        print("🗄️ DatabaseManager init starting...")
+        Log.debug("🗄️ DatabaseManager init starting...")
         let resolvedPath: String
         if let dbPath = dbPath {
             resolvedPath = dbPath
-            print("🗄️ Using provided dbPath: \(dbPath)")
+            Log.debug("🗄️ Using provided dbPath: \(dbPath)")
         } else {
-            print("🗄️ Getting app support directory...")
+            Log.debug("🗄️ Getting app support directory...")
             // Default to app support directory
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             let appName = "FoundationChat"
             let appDir = appSupport.appendingPathComponent(appName)
             
-            print("🗄️ Creating directory if needed: \(appDir.path)")
+            Log.debug("🗄️ Creating directory if needed: \(appDir.path)")
             // Create directory if it doesn't exist
             try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
             
             resolvedPath = appDir.appendingPathComponent("foundationchat.db").path
-            print("🗄️ Resolved path: \(resolvedPath)")
+            Log.debug("🗄️ Resolved path: \(resolvedPath)")
         }
         
         self.dbPath = resolvedPath
-        print("🗄️ Creating SQLite connection...")
+        Log.debug("🗄️ Creating SQLite connection...")
         self.db = try Connection(resolvedPath)
-        print("🗄️ SQLite connection created, initializing database...")
+        Log.debug("🗄️ SQLite connection created, initializing database...")
         try initializeDatabase()
-        print("✅ DatabaseManager init complete")
+        Log.debug("✅ DatabaseManager init complete")
     }
     
     /// Initialize the database and create tables if they don't exist
@@ -680,4 +680,3 @@ public enum DatabaseError: LocalizedError {
         }
     }
 }
-

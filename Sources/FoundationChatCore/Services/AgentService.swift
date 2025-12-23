@@ -34,55 +34,55 @@ public actor AgentService {
         registry: AgentRegistry = .shared,
         orchestrator: AgentOrchestrator? = nil
     ) {
-        print("🤖 AgentService init() starting...")
+        Log.debug("🤖 AgentService init() starting...")
         self.registry = registry
         self.orchestrator = orchestrator ?? AgentOrchestrator(registry: registry)
-        print("✅ AgentService init() complete (agents will be initialized lazily via ensureAgentsInitialized())")
+        Log.debug("✅ AgentService init() complete (agents will be initialized lazily via ensureAgentsInitialized())")
     }
     
     /// Initialize default agents
     private func initializeDefaultAgents() async {
-        print("🤖 Registering FileReaderAgent...")
+        Log.debug("🤖 Registering FileReaderAgent...")
         await registry.register(FileReaderAgent())
-        print("✅ FileReaderAgent registered")
+        Log.debug("✅ FileReaderAgent registered")
         
-        print("🤖 Registering WebSearchAgent...")
+        Log.debug("🤖 Registering WebSearchAgent...")
         await registry.register(WebSearchAgent())
-        print("✅ WebSearchAgent registered")
+        Log.debug("✅ WebSearchAgent registered")
         
-        print("🤖 Registering CodeAnalysisAgent...")
+        Log.debug("🤖 Registering CodeAnalysisAgent...")
         await registry.register(CodeAnalysisAgent())
-        print("✅ CodeAnalysisAgent registered")
+        Log.debug("✅ CodeAnalysisAgent registered")
         
-        print("🤖 Registering DataAnalysisAgent...")
+        Log.debug("🤖 Registering DataAnalysisAgent...")
         await registry.register(DataAnalysisAgent())
-        print("✅ DataAnalysisAgent registered")
+        Log.debug("✅ DataAnalysisAgent registered")
         
-        print("🤖 Registering VisionAgent...")
+        Log.debug("🤖 Registering VisionAgent...")
         await registry.register(VisionAgent())
-        print("✅ VisionAgent registered")
+        Log.debug("✅ VisionAgent registered")
         
         // Create a coordinator agent
         // **Status**: ⚠️ Basic Agent - No special tools, just general reasoning
         // Used for orchestrating multi-agent workflows
-        print("🤖 Creating coordinator agent...")
+        Log.debug("🤖 Creating coordinator agent...")
         let coordinator = BaseAgent(
             id: AgentId.coordinator,
             name: AgentName.coordinator,
             description: "Coordinates tasks and delegates to specialized agents",
             capabilities: [.generalReasoning]
         )
-        print("✅ Coordinator agent created, registering...")
+        Log.debug("✅ Coordinator agent created, registering...")
         await registry.register(coordinator)
-        print("✅ Coordinator registered")
+        Log.debug("✅ Coordinator registered")
         
         // Set default pattern
-        print("🤖 Setting default orchestration pattern...")
+        Log.debug("🤖 Setting default orchestration pattern...")
         if let coordinatorAgent = await registry.getAgent(byId: coordinator.id) {
             await orchestrator.setPattern(OrchestratorPattern(coordinator: coordinatorAgent))
-            print("✅ Orchestration pattern set")
+            Log.debug("✅ Orchestration pattern set")
         }
-        print("✅ All default agents initialized")
+        Log.debug("✅ All default agents initialized")
     }
     
     /// Process a message in an agent conversation
@@ -100,7 +100,7 @@ public actor AgentService {
         tokenBudget: Int? = nil,
         progressTracker: OrchestrationProgressTracker? = nil
     ) async throws -> AgentResult {
-        print("🤖 AgentService.processMessage() called with message: \(message.prefix(50))...")
+        Log.debug("🤖 AgentService.processMessage() called with message: \(message.prefix(50))...")
         
         let baseContext = conversationContexts[conversationId] ?? AgentContext()
         let context = await ContextAssemblyService.shared.assemble(
@@ -110,8 +110,8 @@ public actor AgentService {
             currentMessage: message
         )
         
-        print("🤖 Conversation history updated (\(context.conversationHistory.count) messages from \(conversation.messages.count) total)")
-        print("🤖 File references: \(context.fileReferences.count) files")
+        Log.debug("🤖 Conversation history updated (\(context.conversationHistory.count) messages from \(conversation.messages.count) total)")
+        Log.debug("🤖 File references: \(context.fileReferences.count) files")
         
         // Create task
         let task = AgentTask(
@@ -119,14 +119,14 @@ public actor AgentService {
             requiredCapabilities: extractRequiredCapabilities(from: message),
             parameters: [:]
         )
-        print("🤖 Task created with capabilities: \(task.requiredCapabilities)")
+        Log.debug("🤖 Task created with capabilities: \(task.requiredCapabilities)")
         
         // Get agent configuration
         guard let config = conversation.agentConfiguration else {
-            print("❌ No agent configuration found")
+            Log.error("❌ No agent configuration found")
             throw AgentServiceError.noAgentConfiguration
         }
-        print("🤖 Agent configuration found: \(config.selectedAgents.count) agents selected")
+        Log.debug("🤖 Agent configuration found: \(config.selectedAgents.count) agents selected")
         
         // #region debug log
         await DebugLogger.shared.log(
@@ -142,14 +142,14 @@ public actor AgentService {
         // #endregion
         
         // Execute task
-        print("🤖 Calling orchestrator.execute()...")
+        Log.debug("🤖 Calling orchestrator.execute()...")
         let result = try await orchestrator.execute(
             task: task,
             context: context,
             agentIds: config.selectedAgents.isEmpty ? nil : config.selectedAgents,
             progressTracker: progressTracker
         )
-        print("✅ Orchestrator.execute() completed")
+        Log.debug("✅ Orchestrator.execute() completed")
         
         // Extract and log token usage from result
         if let updated = result.updatedContext {
@@ -158,11 +158,11 @@ public actor AgentService {
                let coordinatorOutput = updated.metadata["tokens_\(result.agentId.uuidString.prefix(8))_output"],
                let totalTokens = updated.metadata["tokens_total_task"],
                let savings = updated.metadata["tokens_saved_vs_single_agent"] {
-                print("📊 AgentService: Token breakdown:")
-                print("  - Coordinator input: \(coordinatorInput) tokens")
-                print("  - Coordinator output: \(coordinatorOutput) tokens")
-                print("  - Total tokens: \(totalTokens)")
-                print("  - Token savings: \(savings)%")
+                Log.debug("📊 AgentService: Token breakdown:")
+                Log.debug("  - Coordinator input: \(coordinatorInput) tokens")
+                Log.debug("  - Coordinator output: \(coordinatorOutput) tokens")
+                Log.debug("  - Total tokens: \(totalTokens)")
+                Log.debug("  - Token savings: \(savings)%")
             }
             
             // Check budget if provided
@@ -170,9 +170,9 @@ public actor AgentService {
                let totalStr = updated.metadata["tokens_total_task"],
                let total = Int(totalStr) {
                 if total > budget {
-                    print("⚠️ AgentService: Token usage (\(total)) exceeds budget (\(budget))")
+                    Log.warn("⚠️ AgentService: Token usage (\(total)) exceeds budget (\(budget))")
                 } else if Double(total) >= Double(budget) * 0.8 {
-                    print("⚠️ AgentService: Approaching token budget (\(total)/\(budget))")
+                    Log.warn("⚠️ AgentService: Approaching token budget (\(total)/\(budget))")
                 }
             }
             
@@ -200,12 +200,12 @@ public actor AgentService {
         conversation: Conversation,
         fileReferences: [String] = []
     ) async throws -> AgentResult {
-        print("🤖 AgentService.processSingleAgentMessage() called for agent: \(agentId)")
+        Log.debug("🤖 AgentService.processSingleAgentMessage() called for agent: \(agentId)")
         
         // Resolve agent (with fallback logic for ID mismatches)
         let resolvedAgent = try await resolveAgent(byId: agentId)
         
-        print("✅ Agent found: \(resolvedAgent.name)")
+        Log.debug("✅ Agent found: \(resolvedAgent.name)")
         
         let baseContext = conversationContexts[conversationId] ?? AgentContext()
         let context = await ContextAssemblyService.shared.assemble(
@@ -216,8 +216,8 @@ public actor AgentService {
             currentMessage: message
         )
         
-        print("🤖 Conversation history updated (\(context.conversationHistory.count) messages from \(conversation.messages.count) total)")
-        print("🤖 File references: \(context.fileReferences.count) files")
+        Log.debug("🤖 Conversation history updated (\(context.conversationHistory.count) messages from \(conversation.messages.count) total)")
+        Log.debug("🤖 File references: \(context.fileReferences.count) files")
         
         // #region debug log
         await DebugLogger.shared.log(
@@ -242,13 +242,13 @@ public actor AgentService {
         )
         
         // Process the task directly with the agent (no orchestration)
-        print("🤖 Processing task directly with agent: \(resolvedAgent.name)...")
+        Log.debug("🤖 Processing task directly with agent: \(resolvedAgent.name)...")
         
         // Debug logging
         await logAgentProcessing(agent: resolvedAgent, task: task, context: context)
         
         let result = try await resolvedAgent.process(task: task, context: context)
-        print("✅ Agent processing completed")
+        Log.debug("✅ Agent processing completed")
         
         // Debug logging for result
         await logAgentResult(agent: resolvedAgent, result: result)
@@ -264,11 +264,11 @@ public actor AgentService {
     /// Get available agents
     /// - Returns: Array of all registered agents
     public func getAvailableAgents() async -> [any Agent] {
-        print("🔧 getAvailableAgents() called...")
+        Log.debug("🔧 getAvailableAgents() called...")
         // Ensure agents are initialized (idempotent)
         await ensureAgentsInitialized()
         let agents = await registry.listAll()
-        print("🔧 Returning \(agents.count) agents")
+        Log.debug("🔧 Returning \(agents.count) agents")
         return agents
     }
     
@@ -289,7 +289,7 @@ public actor AgentService {
         let hasAll = expectedAgentNames.isSubset(of: existingNames)
         if !hasAll {
             let missing = expectedAgentNames.subtracting(existingNames)
-            print("⚠️ Missing agents: \(missing.joined(separator: ", "))")
+            Log.warn("⚠️ Missing agents: \(missing.joined(separator: ", "))")
         }
         return hasAll
     }
@@ -299,13 +299,13 @@ public actor AgentService {
         // Check if all expected agents are already initialized
         if await hasAllDefaultAgents() {
             let existing = await registry.listAll()
-            print("🔧 All default agents already initialized (\(existing.count) found)")
+            Log.debug("🔧 All default agents already initialized (\(existing.count) found)")
             return
         }
         
         // Check if initialization is in progress
         if isInitializing {
-            print("🔧 Agent initialization already in progress, waiting...")
+            Log.debug("🔧 Agent initialization already in progress, waiting...")
             // Wait for the existing initialization task to complete
             if let task = initializationTask {
                 await task.value
@@ -320,7 +320,7 @@ public actor AgentService {
         // Start initialization
         isInitializing = true
         let existing = await registry.listAll()
-        print("🔧 Initializing default agents (currently \(existing.count) agents found)...")
+        Log.debug("🔧 Initializing default agents (currently \(existing.count) agents found)...")
         
         let task = Task {
             await initializeDefaultAgents()
@@ -333,9 +333,9 @@ public actor AgentService {
         // Verify all agents were registered
         if await hasAllDefaultAgents() {
             let final = await registry.listAll()
-            print("✅ All default agents initialized (\(final.count) agents)")
+            Log.debug("✅ All default agents initialized (\(final.count) agents)")
         } else {
-            print("⚠️ Warning: Some agents may not have been initialized")
+            Log.warn("⚠️ Warning: Some agents may not have been initialized")
         }
     }
     
@@ -435,8 +435,8 @@ public actor AgentService {
         // In single-agent mode with exactly one selected agent, we can safely use the first
         // available specialized agent (excluding Coordinator) as a fallback.
         if agent == nil {
-            print("⚠️ Agent not found by ID: \(agentId) - IDs may have changed on app restart")
-            print("⚠️ Attempting fallback resolution for single-agent mode...")
+            Log.warn("⚠️ Agent not found by ID: \(agentId) - IDs may have changed on app restart")
+            Log.warn("⚠️ Attempting fallback resolution for single-agent mode...")
             
             // Get all available agents (excluding Coordinator for single-agent mode)
             let availableAgents = allAgents.filter { $0.name != AgentName.coordinator }
@@ -445,7 +445,7 @@ public actor AgentService {
             // use it as a fallback. This handles the common case where only one agent is enabled.
             if availableAgents.count == 1, let fallbackAgent = availableAgents.first {
                 agent = fallbackAgent
-                print("✅ Resolved to single available agent: \(fallbackAgent.name)")
+                Log.debug("✅ Resolved to single available agent: \(fallbackAgent.name)")
             } else if !availableAgents.isEmpty {
                 // Multiple agents available - try to match by checking which agent was likely intended
                 // Check if conversation config has hints about which agent to use
@@ -456,13 +456,13 @@ public actor AgentService {
                     agent = availableAgents.first
                 }
                 if let resolvedAgent = agent {
-                    print("⚠️ Using fallback agent resolution: \(resolvedAgent.name)")
+                    Log.warn("⚠️ Using fallback agent resolution: \(resolvedAgent.name)")
                 }
             }
         }
         
         guard let resolvedAgent = agent else {
-            print("❌ Agent not found: \(agentId) and could not resolve to any available agent")
+            Log.error("❌ Agent not found: \(agentId) and could not resolve to any available agent")
             
             // Debug logging for failed lookup
             await logAgentLookupFailed(agentId: agentId, availableAgents: allAgents)
@@ -559,4 +559,3 @@ public enum AgentServiceError: Error, Sendable {
     case invalidConfiguration
     case executionFailed(String)
 }
-

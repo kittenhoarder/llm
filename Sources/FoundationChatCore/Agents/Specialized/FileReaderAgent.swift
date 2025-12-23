@@ -64,7 +64,7 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
         }
         
         // Check if RAG is enabled
-        let useRAG = UserDefaults.standard.bool(forKey: "useRAG")
+        let useRAG = UserDefaults.standard.bool(forKey: UserDefaultsKey.useRAG)
         
         // Try to extract conversationId from context metadata or file path
         var conversationId: UUID? = nil
@@ -93,8 +93,8 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
                 let query = task.description.isEmpty ? "file content" : task.description
                 
                 // Search for relevant chunks
-                let topK = UserDefaults.standard.integer(forKey: "ragTopK") > 0 
-                    ? UserDefaults.standard.integer(forKey: "ragTopK") 
+                let topK = UserDefaults.standard.integer(forKey: UserDefaultsKey.ragTopK) > 0
+                    ? UserDefaults.standard.integer(forKey: UserDefaultsKey.ragTopK)
                     : 5
                 
                 ragChunks = try await ragService.searchRelevantChunks(
@@ -106,13 +106,13 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
                 
                 if !ragChunks.isEmpty {
                     // Use RAG chunks instead of full file
-                    print("🔍 FileReaderAgent: Using RAG - found \(ragChunks.count) relevant chunks")
+                    Log.debug("🔍 FileReaderAgent: Using RAG - found \(ragChunks.count) relevant chunks")
                     fileContent = formatRAGChunks(ragChunks)
                 } else {
-                    print("⚠️ FileReaderAgent: RAG search returned no results, falling back to full file read")
+                    Log.warn("⚠️ FileReaderAgent: RAG search returned no results, falling back to full file read")
                 }
             } catch {
-                print("⚠️ FileReaderAgent: RAG search failed: \(error.localizedDescription), falling back to full file read")
+                Log.warn("⚠️ FileReaderAgent: RAG search failed: \(error.localizedDescription), falling back to full file read")
             }
         }
         
@@ -447,4 +447,3 @@ public enum FileReaderError: Error, Sendable {
     case invalidJSON
     case permissionDenied
 }
-

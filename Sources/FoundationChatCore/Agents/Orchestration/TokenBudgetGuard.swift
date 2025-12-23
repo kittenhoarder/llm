@@ -48,7 +48,7 @@ public actor TokenBudgetGuard {
             return context // Already within budget
         }
         
-        print("⚠️ TokenBudgetGuard: Context exceeds budget (\(totalTokens) > \(budget)), enforcing...")
+        Log.warn("⚠️ TokenBudgetGuard: Context exceeds budget (\(totalTokens) > \(budget)), enforcing...")
         
         var enforcedContext = context
         

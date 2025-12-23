@@ -141,6 +141,16 @@ swift run foundation-chat chat
 swift run foundation-chat chat -m "Analyze this codebase"
 ```
 
+### Codebase Indexing (LEANN)
+
+The Code Analysis agent uses LEANN for semantic search across a codebase. By default the app will auto-discover `leann_poc/` in the project, but you can override the location in **Settings → Agents & Tools → Code Analysis**.
+
+Optional overrides:
+- `LEANN_ROOT` to point at a directory that contains `leann_poc/`
+- `LEANN_PYTHON_PATH` and `LEANN_BRIDGE_PATH` to point directly to the venv python and `leann_bridge.py`
+
+If LEANN isn’t configured or the codebase isn’t indexed yet, the tools return a friendly prompt to index in Settings.
+
 ## Key Components
 
 ### SVDB Integration
@@ -221,6 +231,7 @@ flowchart LR
 - Use `AgentName` + `AgentId` for anything persisted or referenced across restarts.
 - Avoid hardcoded filesystem paths; use Application Support or temp directories.
 - Keep context optimization in one place when refactoring (Context Assembly goal).
+- Use `UserDefaultsKey` for settings keys and `Log` for debug logging.
 
 ### Adding a New Agent
 
@@ -330,6 +341,7 @@ Sources/
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - Detailed architecture documentation
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) - Known issues and workarounds
+- [TESTING_ORCHESTRATION.md](TESTING_ORCHESTRATION.md) - Orchestration visualization debug steps
 
 ## Testing
 

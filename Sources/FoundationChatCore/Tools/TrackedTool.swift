@@ -56,7 +56,7 @@ public struct TrackedTool<T: Tool>: Tool, Sendable where T: Sendable {
     /// - Throws: Any error from the wrapped tool
     public func call(arguments: T.Arguments) async throws -> T.Output {
         // DEBUG: Log that the tracked tool is being called
-        print("[DEBUG TrackedTool] Tool '\(name)' called with sessionId: \(sessionId)")
+        Log.debug("[DEBUG TrackedTool] Tool '\(name)' called with sessionId: \(sessionId)")
         
         // Record the tool call
         await tracker.recordCall(
@@ -65,16 +65,16 @@ public struct TrackedTool<T: Tool>: Tool, Sendable where T: Sendable {
             arguments: formatArguments(arguments)
         )
         
-        print("[DEBUG TrackedTool] Tool call recorded for '\(name)'")
+        Log.debug("[DEBUG TrackedTool] Tool call recorded for '\(name)'")
         
         // Delegate to wrapped tool
         let result = try await wrappedTool.call(arguments: arguments)
         
         let resultString = String(describing: result)
-        print("[DEBUG TrackedTool] Tool '\(name)' completed, result length: \(resultString.count)")
+        Log.debug("[DEBUG TrackedTool] Tool '\(name)' completed, result length: \(resultString.count)")
         // Show first 200 chars of result for debugging
         let preview = resultString.count > 200 ? String(resultString.prefix(200)) + "..." : resultString
-        print("[DEBUG TrackedTool] Tool result preview: \(preview)")
+        Log.debug("[DEBUG TrackedTool] Tool result preview: \(preview)")
         
         return result
     }

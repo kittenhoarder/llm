@@ -90,11 +90,9 @@ let package = Package(
             exclude: [
                 "Integration/ErrorScenarioTests.swift",
                 "Integration/PerformanceTests.swift",
-                "Integration/DuckDuckGoLLMIntegrationTests.swift",
                 "Integration/MockLLMService.swift",
                 "Services/LLMToolServiceTests.swift",
-                "Services/ToolRegistryServiceTests.swift",
-                "Tools/DuckDuckGoToolServiceTests.swift"
+                "Services/ToolRegistryServiceTests.swift"
             ]
         ),
         .testTarget(

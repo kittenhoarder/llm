@@ -1,42 +1,36 @@
 - Goal (incl. success criteria):
-  - Implement low-risk improvements and improve existing docs; design/introduce Context Assembly + orchestration modularization; pause at major UAT milestones.
+  - Fix app freeze during codebase review (LEANN tool execution) and stabilize UX.
 
 - Constraints/Assumptions:
-  - Do not remove/undo other devs’ positive changes (including untracked files like `AGENTS.md`).
-  - Pause for UAT after major milestones.
+  - Maintain continuity ledger updates for goal/decisions/state changes.
 
 - Key decisions:
-  - No new docs; improve existing docs only.
+  - None yet.
 
 - State:
-  - Implemented web-search grounding in synthesis; needs UAT.
+  - LEANN bridge updated with sendable-safe output collector for async process I/O.
 
 - Done:
-  - Implemented stable agent IDs, fixed DebugLogger default path, and made RAG delete use embedding dimension.
-  - Improved existing docs (README, ARCHITECTURE) with LLM-friendly edit boundaries and stability note.
+  - Read existing continuity ledger.
+  - Added LEANN path resolution with env overrides and missing-configuration handling.
+  - Guarded codebase search tools for missing index/configuration.
+  - Fixed orchestrator delegation helpers to accept agents parameter.
+  - Added LEANN root override setting and reloadable configuration.
+  - Added resolved LEANN path status indicator in Settings.
 
 - Now:
-  - Await UAT on web-search grounding behavior.
+  - Make LEANN bridge non-blocking to prevent UI freezes.
 
 - Next:
-  - UAT for web-search grounding; proceed to orchestration modularization if approved.
+  - Retest codebase review flow and confirm no freezes.
 
 - Open questions (UNCONFIRMED if needed):
-  - UNCONFIRMED: Whether synthesis should hard-require citations when Web Search is used.
+  - UNCONFIRMED: Do you want to bundle LEANN assets in app resources or rely on external install?
 
 - Working set (files/ids/):
-  - `Sources/FoundationChatCore/Services/ContextAssemblyService.swift`
-  - `Sources/FoundationChatCore/Agents/Orchestration/DelegationDecider.swift`
-  - `Sources/FoundationChatCore/Agents/Orchestration/OrchestratorPattern.swift`
-  - `Sources/FoundationChatCore/Agents/Specialized/WebSearchAgent.swift`
-  - `Sources/FoundationChatCore/Services/AgentService.swift`
-  - `Sources/FoundationChatCore/Constants/AppConstants.swift`
-  - `Sources/FoundationChatCore/Agents/Specialized/FileReaderAgent.swift`
-  - `Sources/FoundationChatCore/Agents/Specialized/CodeAnalysisAgent.swift`
-  - `Sources/FoundationChatCore/Agents/Specialized/DataAnalysisAgent.swift`
-  - `Sources/FoundationChatCore/Agents/Specialized/VisionAgent.swift`
-  - `Sources/FoundationChatCore/Agents/AgentOrchestrator.swift`
-  - `Sources/FoundationChatCore/Utilities/DebugLogger.swift`
-  - `Sources/FoundationChatCore/Services/RAGService.swift`
-  - `README.md`
-  - `ARCHITECTURE.md`
+  - `CONTINUITY.md`
+  - Added Log utility and replaced print logging across core/mac modules.
+  - Centralized UserDefaults keys usage across settings and services.
+  - Removed redundant orchestrator conditional in agent configuration.
+  - Updated README, ARCHITECTURE, TESTING_ORCHESTRATION for LEANN setup and logging notes.
+  - Reworked LEANNBridgeService.runPythonCommand to avoid blocking waitUntilExit and added sendable-safe collector.

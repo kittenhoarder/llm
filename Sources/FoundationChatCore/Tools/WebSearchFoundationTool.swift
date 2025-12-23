@@ -14,7 +14,7 @@ public struct WebSearchFoundationTool: Tool, Sendable {
     public typealias Output = String
     
     public let name = "web_search"
-    public let description = "Search the web using real search engines (Google, Bing, DuckDuckGo) to find current information, news, facts, and real-time data. Use this tool when the user asks you to 'search', 'look up', 'find information online', asks about current events, recent data, or information that may have changed. Always use this tool when explicitly asked to search the web or find information online. Returns formatted search results with titles, URLs, snippets, and extracted content."
+    public let description = "Search the web using real search engines (Google, Bing) to find current information, news, facts, and real-time data. Use this tool when the user asks you to 'search', 'look up', 'find information online', asks about current events, recent data, or information that may have changed. Always use this tool when explicitly asked to search the web or find information online. Returns formatted search results with titles, URLs, snippets, and extracted content."
     
     /// Maximum number of results to return
     private let maxResults: Int

@@ -37,16 +37,31 @@ public actor ProgressiveContextBuilder {
         previousResults: [AgentResult],
         tokenBudget: Int
     ) async throws -> AgentContext {
-        print("🔧 ProgressiveContextBuilder: Building context for subtask '\(subtask.description.prefix(50))...'")
+        Log.debug("🔧 ProgressiveContextBuilder: Building context for subtask '\(subtask.description.prefix(50))...'")
         
         var isolatedContext = AgentContext()
         
-        // 1. Light conversation summary (1-2 sentences)
+        // 1. Light conversation summary + Recent turns
         if !baseContext.conversationHistory.isEmpty {
             let summary = try await summarizer.summarize(baseContext.conversationHistory, level: .light)
+            
+            // Include summary as a system message
             isolatedContext.conversationHistory = [
                 Message(role: .system, content: "Context summary: \(summary)")
             ]
+            
+            // Also include the last 3 messages verbatim for immediate context
+            let recentTurns = baseContext.conversationHistory.suffix(3)
+            isolatedContext.conversationHistory.append(contentsOf: recentTurns)
+        }
+        
+        // Ensure first user message (the high-level goal) is always present if not in suffix
+        if let firstUserMessage = baseContext.conversationHistory.first(where: { $0.role == .user }),
+           !isolatedContext.conversationHistory.contains(where: { $0.id == firstUserMessage.id }) {
+            isolatedContext.conversationHistory.insert(
+                Message(role: .system, content: "Original Goal: \(firstUserMessage.content)"),
+                at: 0
+            )
         }
         
         // 2. Relevant file references only (filter based on subtask description)
@@ -86,7 +101,7 @@ public actor ProgressiveContextBuilder {
         )
         
         let finalTokens = await estimateContextTokens(enforcedContext)
-        print("✅ ProgressiveContextBuilder: Built context with ~\(finalTokens) tokens (budget: \(tokenBudget))")
+        Log.debug("✅ ProgressiveContextBuilder: Built context with ~\(finalTokens) tokens (budget: \(tokenBudget))")
         
         return enforcedContext
     }

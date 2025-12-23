@@ -27,7 +27,7 @@ public actor AgentRegistry {
     public func register(_ agent: any Agent) {
         // Check if an agent with this name already exists
         if hasAgent(named: agent.name) {
-            print("⚠️ Agent '\(agent.name)' already registered, skipping duplicate registration")
+            Log.warn("⚠️ Agent '\(agent.name)' already registered, skipping duplicate registration")
             return
         }
         

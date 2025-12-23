@@ -16,11 +16,11 @@ public class ConversationService {
     /// Initialize the conversation service
     /// - Parameter dbPath: Optional custom database path
     public init(dbPath: String? = nil) throws {
-        print("💬 ConversationService init() called")
-        print("💬 Thread: \(Thread.isMainThread ? "Main" : "Background")")
-        print("💬 About to create DatabaseManager...")
+        Log.debug("💬 ConversationService init() called")
+        Log.debug("💬 Thread: \(Thread.isMainThread ? "Main" : "Background")")
+        Log.debug("💬 About to create DatabaseManager...")
         self.dbManager = try DatabaseManager(dbPath: dbPath)
-        print("✅ ConversationService init() complete")
+        Log.debug("✅ ConversationService init() complete")
     }
     
     /// Create a new conversation
@@ -74,7 +74,7 @@ public class ConversationService {
             try await fileManagerService.deleteFilesForConversation(conversationId: id)
         } catch {
             // Log error but don't fail deletion - we still want to delete from database
-            print("⚠️ Error deleting files for conversation \(id): \(error)")
+            Log.warn("⚠️ Error deleting files for conversation \(id): \(error)")
         }
         
         // Delete from database
@@ -97,10 +97,10 @@ public class ConversationService {
                 // Index synchronously for current user message (needed for immediate context building)
                 do {
                     try await RAGService.shared.indexMessage(message, conversationId: conversationId)
-                    print("✅ ConversationService: Indexed message \(message.id) immediately")
+                    Log.debug("✅ ConversationService: Indexed message \(message.id) immediately")
                 } catch {
                     // Log error but don't fail message save
-                    print("⚠️ ConversationService: Failed to index message \(message.id) in SVDB: \(error.localizedDescription)")
+                    Log.warn("⚠️ ConversationService: Failed to index message \(message.id) in SVDB: \(error.localizedDescription)")
                 }
             } else {
                 // Index asynchronously for assistant responses (don't block)
@@ -109,7 +109,7 @@ public class ConversationService {
                         try await RAGService.shared.indexMessage(message, conversationId: conversationId)
                     } catch {
                         // Log error but don't fail message save
-                        print("⚠️ ConversationService: Failed to index message \(message.id) in SVDB: \(error.localizedDescription)")
+                        Log.warn("⚠️ ConversationService: Failed to index message \(message.id) in SVDB: \(error.localizedDescription)")
                     }
                 }
             }
@@ -125,17 +125,17 @@ public class ConversationService {
         }
         
         guard !conversation.isEphemeral else {
-            print("ℹ️ ConversationService: Skipping ephemeral conversation \(conversationId)")
+            Log.debug("ℹ️ ConversationService: Skipping ephemeral conversation \(conversationId)")
             return
         }
         
         let messages = conversation.messages
         guard !messages.isEmpty else {
-            print("ℹ️ ConversationService: No messages to index for conversation \(conversationId)")
+            Log.debug("ℹ️ ConversationService: No messages to index for conversation \(conversationId)")
             return
         }
         
-        print("📝 ConversationService: Indexing \(messages.count) messages for conversation \(conversationId)")
+        Log.debug("📝 ConversationService: Indexing \(messages.count) messages for conversation \(conversationId)")
         try await RAGService.shared.indexConversationHistory(messages, conversationId: conversationId)
     }
     
@@ -202,4 +202,3 @@ public class ConversationService {
         }
     }
 }
-

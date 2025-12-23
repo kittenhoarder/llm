@@ -237,7 +237,7 @@ public actor ContextOptimizer {
             }
         } catch {
             // SVDB not available or error occurred, fall back to summarization
-            print("⚠️ ContextOptimizer: SVDB retrieval failed, falling back to summarization: \(error.localizedDescription)")
+            Log.warn("⚠️ ContextOptimizer: SVDB retrieval failed, falling back to summarization: \(error.localizedDescription)")
         }
         
         // Combine recent messages with retrieved messages
@@ -332,7 +332,7 @@ public actor ContextOptimizer {
         let totalTokens = systemTokens + toolTokens + optimizedMessageTokens
         let messagesTruncated = messages.count - optimizedMessages.count
         
-        print("📊 ContextOptimizer: SVDB optimization - Original: \(originalMessageTokens) tokens, Optimized: \(optimizedMessageTokens) tokens, Saved: \(originalMessageTokens - optimizedMessageTokens) tokens")
+        Log.debug("📊 ContextOptimizer: SVDB optimization - Original: \(originalMessageTokens) tokens, Optimized: \(optimizedMessageTokens) tokens, Saved: \(originalMessageTokens - optimizedMessageTokens) tokens")
         
         return OptimizedContext(
             messages: optimizedMessages,
@@ -483,4 +483,3 @@ public actor ContextOptimizer {
         }.joined(separator: " ")
     }
 }
-

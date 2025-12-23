@@ -144,6 +144,15 @@ The coordinator is a `BaseAgent` with `generalReasoning` capability. It has no s
 
 **File**: `Sources/FoundationChatCore/Agents/Specialized/DataAnalysisAgent.swift`
 
+### 6. Codebase Indexing (LEANN)
+
+Codebase search uses LEANN via `LEANNBridgeService`:
+- Auto-discovers `leann_poc/` relative to the app or project.
+- Optional override via Settings (`UserDefaultsKey.leannRootPath`) for a custom LEANN install.
+- Environment fallbacks for CLI workflows: `LEANN_ROOT`, `LEANN_PYTHON_PATH`, `LEANN_BRIDGE_PATH`.
+
+If no index exists, codebase tools return a friendly prompt to index in Settings rather than throwing.
+
 ## Task Decomposition Flow
 
 ### Step 1: Coordinator Analysis
@@ -399,6 +408,7 @@ Agent selection is managed in Settings:
 - When single-agent mode: Exactly one agent must be selected (first selected is used)
 - When orchestrator mode: At least one specialized agent must be selected
 - Changes apply to new conversations only (existing conversations keep their config)
+- **Code Analysis** includes an optional LEANN path override (for custom installs)
 
 **Files**:
 - `Sources/FoundationChatMac/Views/SettingsView.swift` - Settings UI

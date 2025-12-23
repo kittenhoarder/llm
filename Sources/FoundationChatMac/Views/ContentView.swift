@@ -12,15 +12,15 @@ import FoundationChatCore
 public struct ContentView: View {
     @State private var viewModel: ChatViewModel?
     @State private var showSettings = false
-    @AppStorage("preferredColorScheme") private var preferredColorScheme: String = "dark"
+    @AppStorage(UserDefaultsKey.preferredColorScheme) private var preferredColorScheme: String = "dark"
     @Environment(\.colorScheme) private var systemColorScheme
     
     public init() {
-        print("🎨 ContentView initializing...")
+        Log.debug("🎨 ContentView initializing...")
     }
     
     public var body: some View {
-        let _ = print("🎨 ContentView body rendering...")
+        let _ = Log.debug("🎨 ContentView body rendering...")
         let effectiveColorScheme = effectiveColorSchemeForTheme
         
         // Try to create viewModel lazily
@@ -29,23 +29,23 @@ public struct ContentView: View {
                 VStack {
                     Text("Initializing...")
                         .onAppear {
-                            print("📱 Creating ChatViewModel...")
-                            print("📱 Current thread: \(Thread.isMainThread ? "Main" : "Background")")
-                            print("📱 About to create Task...")
+                            Log.debug("📱 Creating ChatViewModel...")
+                            Log.debug("📱 Current thread: \(Thread.isMainThread ? "Main" : "Background")")
+                            Log.debug("📱 About to create Task...")
                             
                             // Try to create it on a background thread first
                             Task { @MainActor in
-                                print("📱 ✅ Task started executing")
-                                print("📱 About to call ChatViewModel()...")
+                                Log.debug("📱 ✅ Task started executing")
+                                Log.debug("📱 About to call ChatViewModel()...")
                                 
-                                print("📱 Calling ChatViewModel init...")
+                                Log.debug("📱 Calling ChatViewModel init...")
                                 let vm = ChatViewModel()
-                                print("📱 ChatViewModel() returned, assigning to viewModel...")
+                                Log.debug("📱 ChatViewModel() returned, assigning to viewModel...")
                                 self.viewModel = vm
-                                print("✅ ChatViewModel created and assigned successfully")
+                                Log.debug("✅ ChatViewModel created and assigned successfully")
                             }
                             
-                            print("📱 Task created (but may not have executed yet)")
+                            Log.debug("📱 Task created (but may not have executed yet)")
                         }
                 }
                 .frame(width: 400, height: 300)
@@ -90,7 +90,7 @@ public struct ContentView: View {
             }
         }
         .onAppear {
-            print("✅ ContentView appeared")
+            Log.debug("✅ ContentView appeared")
         }
         )
     }
