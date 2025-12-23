@@ -201,8 +201,6 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         let availableCapabilities = Set(agents.flatMap { $0.capabilities })
         let hasWebSearch = availableCapabilities.contains(.webSearch)
-        let hasFileReader = availableCapabilities.contains(.fileReading)
-        let hasVision = availableCapabilities.contains(.imageAnalysis)
         
         // Build comprehensive analysis task description with dynamic guidance
         // Initialize RAG content variable

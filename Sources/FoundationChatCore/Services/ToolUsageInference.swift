@@ -16,8 +16,8 @@ public struct ToolUsageInference {
     ///   - availableTools: List of available tool names
     /// - Returns: Array of tool names that were likely used
     public static func inferToolUsage(from content: String, availableTools: [String]) -> [String] {
-        var inferredTools: [String] = []
-        let contentLower = content.lowercased()
+        let inferredTools: [String] = []
+        // let contentLower = content.lowercased()
         
         // Add more tool inference logic here as needed
         
