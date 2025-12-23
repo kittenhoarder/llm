@@ -34,12 +34,15 @@ public actor AgentOrchestrator {
     ///   - context: Shared context
     ///   - agentIds: Optional specific agent IDs to use (if nil, selects automatically)
     ///   - progressTracker: Optional progress tracker for visualization
+    ///   - checkpointCallback: Optional callback to save checkpoints
     /// - Returns: Result of execution
     public func execute(
         task: AgentTask,
         context: AgentContext,
         agentIds: [UUID]? = nil,
-        progressTracker: OrchestrationProgressTracker? = nil
+        progressTracker: OrchestrationProgressTracker? = nil,
+        checkpointCallback: (@Sendable (WorkflowCheckpoint) async throws -> Void)? = nil,
+        cancellationToken: WorkflowCancellationToken? = nil
     ) async throws -> AgentResult {
         // Get agents to use
         let agents: [any Agent]
@@ -84,12 +87,14 @@ public actor AgentOrchestrator {
         // Get or create pattern
         let pattern = currentPattern ?? createDefaultPattern(agents: agents)
         
-        // Execute using pattern - all patterns now support optional progress tracker
+        // Execute using pattern - all patterns now support optional progress tracker, checkpoint callback, and cancellation token
         return try await pattern.execute(
             task: task,
             agents: agents,
             context: context,
-            progressTracker: progressTracker
+            progressTracker: progressTracker,
+            checkpointCallback: checkpointCallback,
+            cancellationToken: cancellationToken
         )
     }
     
@@ -137,7 +142,8 @@ public actor AgentOrchestrator {
         
         // Last resort: create a simple coordinator
         let coordinator = BaseAgent(
-            name: "Default Coordinator",
+            id: AgentId.coordinator,
+            name: AgentName.coordinator,
             description: "Default coordinator agent",
             capabilities: [.generalReasoning]
         )
@@ -154,8 +160,6 @@ public enum AgentOrchestratorError: Error, Sendable {
     case patternNotSet
     case executionFailed(String)
 }
-
-
 
 
 

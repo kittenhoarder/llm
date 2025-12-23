@@ -164,6 +164,33 @@ public class ConversationService {
         return try dbManager.loadOrchestrationStates(for: conversationId)
     }
     
+    /// Save a workflow checkpoint
+    /// - Parameter checkpoint: The checkpoint to save
+    public func saveWorkflowCheckpoint(_ checkpoint: WorkflowCheckpoint) throws {
+        try dbManager.saveWorkflowCheckpoint(checkpoint)
+    }
+    
+    /// Load a workflow checkpoint by ID
+    /// - Parameter id: The checkpoint ID
+    /// - Returns: The checkpoint if found
+    public func loadWorkflowCheckpoint(id: UUID) throws -> WorkflowCheckpoint? {
+        return try dbManager.loadWorkflowCheckpoint(id: id)
+    }
+    
+    /// Load all checkpoints for a conversation
+    /// - Parameter conversationId: The conversation ID
+    /// - Returns: Array of checkpoints sorted by creation date
+    public func loadWorkflowCheckpoints(for conversationId: UUID) throws -> [WorkflowCheckpoint] {
+        return try dbManager.loadWorkflowCheckpoints(for: conversationId)
+    }
+    
+    /// Load all checkpoints for a message
+    /// - Parameter messageId: The message ID
+    /// - Returns: Array of checkpoints sorted by creation date
+    public func loadWorkflowCheckpoints(forMessage messageId: UUID) throws -> [WorkflowCheckpoint] {
+        return try dbManager.loadWorkflowCheckpoints(forMessage: messageId)
+    }
+    
     /// Search conversations by title
     /// - Parameter query: Search query
     /// - Returns: Matching conversations

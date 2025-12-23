@@ -18,6 +18,17 @@ public enum AgentName {
     public static let coordinator = "Coordinator"
 }
 
+/// Stable agent IDs for persistence across restarts
+@available(macOS 26.0, iOS 26.0, *)
+public enum AgentId {
+    public static let fileReader = UUID(uuidString: "0D4A1C6B-2D7E-4C6A-9C2A-7D9D0B8E1C10")!
+    public static let webSearch = UUID(uuidString: "A25C8B32-9F4E-4B5D-9F7E-6A7C2E1B3D48")!
+    public static let codeAnalysis = UUID(uuidString: "6B7F2E1D-2C3A-4C1F-9E4B-5A6C7D8E9F10")!
+    public static let dataAnalysis = UUID(uuidString: "9C0D1E2F-3A4B-5C6D-7E8F-9012A3B4C5D6")!
+    public static let visionAgent = UUID(uuidString: "1A2B3C4D-5E6F-7081-92A3-B4C5D6E7F809")!
+    public static let coordinator = UUID(uuidString: "F1E2D3C4-B5A6-7988-97A6-5B4C3D2E1F0A")!
+}
+
 /// Application-wide constants
 @available(macOS 26.0, iOS 26.0, *)
 public enum AppConstants {
@@ -52,4 +63,3 @@ public enum UserDefaultsKey {
     public static let svdbContextTopK = "svdbContextTopK"
     public static let svdbContextRecentMessages = "svdbContextRecentMessages"
 }
-

@@ -316,6 +316,9 @@ The system uses SVDB (Semantic Vector Database) to optimize conversation context
 - Capability-based indexing
 - Thread-safe (actor-based)
 
+**Stability Note**:
+- Agent IDs are now stable across app restarts via `AgentId` constants to avoid configuration drift.
+
 ## Orchestration Patterns
 
 The system supports two processing modes:
@@ -465,4 +468,3 @@ OrchestratorPattern.execute()
     ↓
 Final Response
 ```
-

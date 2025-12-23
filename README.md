@@ -216,6 +216,12 @@ flowchart LR
 
 ## Development Guide
 
+### LLM-Friendly Edit Boundaries
+- Prefer changing behavior in `Sources/FoundationChatCore` first; UI lives in `Sources/FoundationChatMac`.
+- Use `AgentName` + `AgentId` for anything persisted or referenced across restarts.
+- Avoid hardcoded filesystem paths; use Application Support or temp directories.
+- Keep context optimization in one place when refactoring (Context Assembly goal).
+
 ### Adding a New Agent
 
 1. Create agent class in `Sources/FoundationChatCore/Agents/Specialized/`:
@@ -338,4 +344,3 @@ swift test --filter AgentRegistryTests
 ## License
 
 [Add license information]
-

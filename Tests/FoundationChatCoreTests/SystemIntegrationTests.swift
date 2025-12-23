@@ -97,7 +97,7 @@ final class SystemIntegrationTests: XCTestCase {
         let messageText = "What is 2+2?"
         let userMessage = Message(role: .user, content: messageText)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         // Process a message
         let result = try await agentService.processMessage(
@@ -109,7 +109,7 @@ final class SystemIntegrationTests: XCTestCase {
         // Add assistant message
         let assistantMessage = Message(role: .assistant, content: result.content, toolCalls: result.toolCalls)
         conversation.messages.append(assistantMessage)
-        try conversationService.addMessage(assistantMessage, to: conversationId)
+        try await conversationService.addMessage(assistantMessage, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         XCTAssertTrue(result.success, "Agent should successfully process message")
@@ -143,7 +143,7 @@ final class SystemIntegrationTests: XCTestCase {
         let message1 = "Search for information about Swift programming"
         let userMessage1 = Message(role: .user, content: message1)
         conversation.messages.append(userMessage1)
-        try conversationService.addMessage(userMessage1, to: conversationId)
+        try await conversationService.addMessage(userMessage1, to: conversationId)
         
         let result1 = try await agentService.processMessage(
             message1,
@@ -156,7 +156,7 @@ final class SystemIntegrationTests: XCTestCase {
         // Add assistant message
         let assistantMessage1 = Message(role: .assistant, content: result1.content, toolCalls: result1.toolCalls)
         conversation.messages.append(assistantMessage1)
-        try conversationService.addMessage(assistantMessage1, to: conversationId)
+        try await conversationService.addMessage(assistantMessage1, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         // Reload conversation
@@ -166,7 +166,7 @@ final class SystemIntegrationTests: XCTestCase {
         let message2 = "What did you find?"
         let userMessage2 = Message(role: .user, content: message2)
         conversation.messages.append(userMessage2)
-        try conversationService.addMessage(userMessage2, to: conversationId)
+        try await conversationService.addMessage(userMessage2, to: conversationId)
         
         let result2 = try await agentService.processMessage(
             message2,
@@ -177,7 +177,7 @@ final class SystemIntegrationTests: XCTestCase {
         // Add assistant message
         let assistantMessage2 = Message(role: .assistant, content: result2.content, toolCalls: result2.toolCalls)
         conversation.messages.append(assistantMessage2)
-        try conversationService.addMessage(assistantMessage2, to: conversationId)
+        try await conversationService.addMessage(assistantMessage2, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         XCTAssertTrue(result2.success, "Second message should succeed")
@@ -216,7 +216,7 @@ final class SystemIntegrationTests: XCTestCase {
         let message = "Search for Swift best practices and analyze code structure"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         let result = try await agentService.processMessage(
             message,
@@ -227,7 +227,7 @@ final class SystemIntegrationTests: XCTestCase {
         // Add assistant message
         let assistantMessage = Message(role: .assistant, content: result.content, toolCalls: result.toolCalls)
         conversation.messages.append(assistantMessage)
-        try conversationService.addMessage(assistantMessage, to: conversationId)
+        try await conversationService.addMessage(assistantMessage, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         XCTAssertTrue(result.success, "Collaborative pattern should succeed")
@@ -259,7 +259,7 @@ final class SystemIntegrationTests: XCTestCase {
         let message = "Search for information about Python programming language"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         let result = try await agentService.processMessage(
             message,
@@ -270,7 +270,7 @@ final class SystemIntegrationTests: XCTestCase {
         // Add assistant message
         let assistantMessage = Message(role: .assistant, content: result.content, toolCalls: result.toolCalls)
         conversation.messages.append(assistantMessage)
-        try conversationService.addMessage(assistantMessage, to: conversationId)
+        try await conversationService.addMessage(assistantMessage, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         XCTAssertTrue(result.success, "Web search should succeed")
@@ -308,7 +308,7 @@ final class SystemIntegrationTests: XCTestCase {
         let message1 = "My name is Alice"
         let userMessage1 = Message(role: .user, content: message1)
         conversation.messages.append(userMessage1)
-        try conversationService.addMessage(userMessage1, to: conversationId)
+        try await conversationService.addMessage(userMessage1, to: conversationId)
         
         let result1 = try await agentService.processMessage(
             message1,
@@ -318,7 +318,7 @@ final class SystemIntegrationTests: XCTestCase {
         
         let assistantMessage1 = Message(role: .assistant, content: result1.content, toolCalls: result1.toolCalls)
         conversation.messages.append(assistantMessage1)
-        try conversationService.addMessage(assistantMessage1, to: conversationId)
+        try await conversationService.addMessage(assistantMessage1, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         conversation = try conversationService.loadConversation(id: conversationId)!
@@ -326,7 +326,7 @@ final class SystemIntegrationTests: XCTestCase {
         let message2 = "What is my name?"
         let userMessage2 = Message(role: .user, content: message2)
         conversation.messages.append(userMessage2)
-        try conversationService.addMessage(userMessage2, to: conversationId)
+        try await conversationService.addMessage(userMessage2, to: conversationId)
         
         let result2 = try await agentService.processMessage(
             message2,
@@ -336,7 +336,7 @@ final class SystemIntegrationTests: XCTestCase {
         
         let assistantMessage2 = Message(role: .assistant, content: result2.content, toolCalls: result2.toolCalls)
         conversation.messages.append(assistantMessage2)
-        try conversationService.addMessage(assistantMessage2, to: conversationId)
+        try await conversationService.addMessage(assistantMessage2, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         // Check conversation history
@@ -369,7 +369,7 @@ final class SystemIntegrationTests: XCTestCase {
         let message = "Test message"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try? conversationService.addMessage(userMessage, to: conversationId)
+        try? await conversationService.addMessage(userMessage, to: conversationId)
         
         do {
             let result = try await agentService.processMessage(
@@ -412,7 +412,7 @@ final class SystemIntegrationTests: XCTestCase {
         let message = "Search for information about artificial intelligence"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         let result = try await agentService.processMessage(
             message,
@@ -422,7 +422,7 @@ final class SystemIntegrationTests: XCTestCase {
         
         let assistantMessage = Message(role: .assistant, content: result.content, toolCalls: result.toolCalls)
         conversation.messages.append(assistantMessage)
-        try conversationService.addMessage(assistantMessage, to: conversationId)
+        try await conversationService.addMessage(assistantMessage, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         let executionTime = Date().timeIntervalSince(startTime)
@@ -432,4 +432,3 @@ final class SystemIntegrationTests: XCTestCase {
         print("Execution time: \(executionTime) seconds")
     }
 }
-

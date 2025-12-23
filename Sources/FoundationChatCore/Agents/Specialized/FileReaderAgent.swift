@@ -29,6 +29,7 @@ public class FileReaderAgent: BaseAgent, @unchecked Sendable {
     
     public init() {
         super.init(
+            id: AgentId.fileReader,
             name: AgentName.fileReader,
             description: "Reads and processes files from the file system. Supports text files, markdown, Swift code, JSON, CSV, and full PDF text extraction.",
             capabilities: [.fileReading],
@@ -446,5 +447,4 @@ public enum FileReaderError: Error, Sendable {
     case invalidJSON
     case permissionDenied
 }
-
 

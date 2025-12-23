@@ -32,6 +32,12 @@ public struct OrchestratorPattern: OrchestrationPattern {
     /// Token budget guard
     private let budgetGuard: TokenBudgetGuard
     
+    /// Retry configuration
+    private let retryConfiguration: RetryConfiguration
+    
+    /// Conditional branch evaluator
+    private let branchEvaluator: ConditionalBranchEvaluator
+    
     /// Delegation metrics (stored in a class wrapper to allow mutation in struct)
     private final class MetricsStorage: @unchecked Sendable {
         var metrics: DelegationMetrics?
@@ -45,7 +51,9 @@ public struct OrchestratorPattern: OrchestrationPattern {
         contextBuilder: ProgressiveContextBuilder = ProgressiveContextBuilder(),
         resultSummarizer: ResultSummarizer = ResultSummarizer(),
         tokenTracker: AgentTokenTracker = AgentTokenTracker(),
-        budgetGuard: TokenBudgetGuard = TokenBudgetGuard()
+        budgetGuard: TokenBudgetGuard = TokenBudgetGuard(),
+        retryConfiguration: RetryConfiguration = RetryConfiguration(),
+        branchEvaluator: ConditionalBranchEvaluator = ConditionalBranchEvaluator()
     ) {
         self.coordinator = coordinator
         self.parser = parser
@@ -54,13 +62,17 @@ public struct OrchestratorPattern: OrchestrationPattern {
         self.resultSummarizer = resultSummarizer
         self.tokenTracker = tokenTracker
         self.budgetGuard = budgetGuard
+        self.retryConfiguration = retryConfiguration
+        self.branchEvaluator = branchEvaluator
     }
     
     public func execute(
         task: AgentTask,
         agents: [any Agent],
         context: AgentContext,
-        progressTracker: OrchestrationProgressTracker? = nil
+        progressTracker: OrchestrationProgressTracker? = nil,
+        checkpointCallback: (@Sendable (WorkflowCheckpoint) async throws -> Void)? = nil,
+        cancellationToken: WorkflowCancellationToken? = nil
     ) async throws -> AgentResult {
         // #region debug log
         let agentNames = agents.map { $0.name }
@@ -87,6 +99,77 @@ public struct OrchestratorPattern: OrchestrationPattern {
         var specializedAgentsTime: TimeInterval = 0
         
         print("🎯 OrchestratorPattern: Starting execution for task '\(task.description.prefix(50))...'")
+        
+        // Fast-path: if an image is attached, bypass LLM-based decomposition and route directly to Vision Agent.
+        // This avoids incorrect plans like "web search for local file path" and ensures the image is actually analyzed.
+        let currentAttachments = currentAttachmentPaths(from: context)
+        if let imagePath = firstImagePath(in: currentAttachments),
+           let visionAgent = agents.first(where: { $0.capabilities.contains(.imageAnalysis) || $0.name == AgentName.visionAgent }) {
+            let start = Date()
+            print("🖼️ OrchestratorPattern: Image attachment detected, routing directly to Vision Agent (\(visionAgent.name))")
+            
+            if let tracker = progressTracker {
+                await tracker.emit(.delegationDecision(
+                    shouldDelegate: true,
+                    reason: "Image attachment detected; delegating directly to Vision Agent."
+                ))
+            }
+            
+            let subtask = DecomposedSubtask(
+                description: "Describe/analyze attached image \(URL(fileURLWithPath: imagePath).lastPathComponent)",
+                agentName: visionAgent.name,
+                requiredCapabilities: [.imageAnalysis],
+                canExecuteInParallel: false
+            )
+            let decomposition = TaskDecomposition(subtasks: [subtask])
+            if let tracker = progressTracker {
+                await tracker.emit(.taskDecomposition(decomposition: decomposition))
+                await tracker.emit(.subtaskStarted(subtask: subtask, agentId: visionAgent.id, agentName: visionAgent.name))
+            }
+            
+            let visionTask = AgentTask(
+                description: task.description,
+                requiredCapabilities: [.imageAnalysis],
+                parameters: ["imagePath": imagePath]
+            )
+            let result = try await visionAgent.process(task: visionTask, context: context)
+            
+            if let tracker = progressTracker {
+                await tracker.emit(.subtaskCompleted(subtask: subtask, result: result))
+                await tracker.emit(.synthesisStarted)
+                await tracker.emit(.synthesisCompleted)
+            }
+            
+            // Best-effort metrics (specialized agent prompts aren't tracked by AgentTokenTracker today)
+            let tokenCounter = TokenCounter()
+            let inputTokens = await tokenCounter.countTokens(task.description)
+            let outputTokens = await tokenCounter.countTokens(result.content)
+            let totalTokens = inputTokens + outputTokens
+            
+            metricsStorage.metrics = DelegationMetrics(
+                subtasksCreated: 1,
+                subtasksPruned: 0,
+                agentsUsed: 1,
+                totalTokens: totalTokens,
+                tokenSavingsPercentage: 0.0,
+                executionTimeBreakdown: ExecutionTimeBreakdown(
+                    coordinatorAnalysisTime: 0.0,
+                    coordinatorSynthesisTime: 0.0,
+                    specializedAgentsTime: Date().timeIntervalSince(start)
+                )
+            )
+            
+            if let tracker = progressTracker, let metrics = metricsStorage.metrics {
+                await tracker.emit(.orchestrationCompleted(metrics: metrics))
+                await tracker.finish()
+            }
+            
+            specializedAgentsTime += Date().timeIntervalSince(start)
+            return result
+        }
+        
+        // Check for cancellation
+        try cancellationToken?.checkCancellation()
         
         // Check if smart delegation is enabled (default: true if key doesn't exist)
         let smartDelegationEnabled: Bool
@@ -224,7 +307,9 @@ public struct OrchestratorPattern: OrchestrationPattern {
             This task has \(context.fileReferences.count) attached file(s).
             - If the task involves analyzing text files, code files, or documents, delegate to the File Reader agent
             - If the task involves analyzing images (photos, screenshots, diagrams, etc.), delegate to the Vision Agent
-            - File analysis can often run in parallel with web searches if they're independent
+            - NEVER create a web search subtask to "describe" a local file path (e.g. `/Users/.../IMG_1234.jpg`) — web search cannot access local files
+            - If the user asks "describe this image" and an image is attached, use the Vision Agent (do not use Web Search)
+            - File analysis can often run in parallel with web searches if they're independent (but attached-file inspection is never done via web search)
             """
         }
         
@@ -286,7 +371,19 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         analysisTaskDescription += """
             
-            ## \(context.ragChunks.isEmpty ? "7" : "8"). Task to Analyze
+            ## \(context.ragChunks.isEmpty ? "7" : "8"). Answering Specific Questions
+            
+            **CRITICAL**: When the user asks a specific question (e.g., "What is 1.4.4 about?"), you MUST:
+            - Include the user's exact question in the subtask description
+            - Make the subtask description specific to finding that information
+            - Example: Instead of "Analyze the PDF", use "Find section 1.4.4 in the PDF and explain what it's about"
+            
+            **For File Analysis Tasks:**
+            - If the question mentions a section number (e.g., "1.4.4"), the subtask MUST explicitly mention finding that section
+            - If the question asks about a specific topic, the subtask MUST focus on finding that topic
+            - Generic summaries are NOT acceptable when a specific question is asked
+            
+            ## \(context.ragChunks.isEmpty ? "8" : "9"). Task to Analyze
             
             **Task:** \(taskDescriptionForAnalysis)
             
@@ -430,7 +527,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         // Step 3: Apply dynamic pruning
         let prunedResult = await pruner.prune(decomposition ?? TaskDecomposition(subtasks: []))
-        let finalDecomposition = prunedResult.decomposition
+        var finalDecomposition = prunedResult.decomposition
         
         let subtasksCreated = decomposition?.subtasks.count ?? 0
         let subtasksPruned = prunedResult.removalRationales.count
@@ -475,6 +572,22 @@ public struct OrchestratorPattern: OrchestrationPattern {
             return try await fallbackExecution(task: task, agents: agents, context: context)
         }
         
+        // Create checkpoint after decomposition (pre-execution)
+        if let callback = checkpointCallback {
+            await createCheckpoint(
+                phase: .decomposition,
+                orchestrationState: OrchestrationState(
+                    currentPhase: .decomposition,
+                    decomposition: finalDecomposition,
+                    subtaskStates: Dictionary(uniqueKeysWithValues: finalDecomposition.subtasks.map { ($0.id, SubtaskExecutionState.pending) })
+                ),
+                task: task,
+                context: context,
+                agents: agents,
+                callback: callback
+            )
+        }
+        
         // Get parallelizable groups
         let parallelGroups = finalDecomposition.getParallelizableGroups()
         print("🔄 OrchestratorPattern: Executing \(parallelGroups.count) groups of subtasks")
@@ -488,12 +601,16 @@ public struct OrchestratorPattern: OrchestrationPattern {
             if group.count == 1 || !group.allSatisfy({ $0.canExecuteInParallel }) {
                 // Sequential execution
                 for subtask in group {
+                    // Check for cancellation before each subtask
+                    try cancellationToken?.checkCancellation()
+                    
                     let result = try await executeSubtask(
                         subtask: subtask,
                         agents: agents,
                         context: updatedContext,
                         previousResults: previousResults,
-                        progressTracker: progressTracker
+                        progressTracker: progressTracker,
+                        cancellationToken: cancellationToken
                     )
                     results.append(result)
                     previousResults.append(result)
@@ -507,18 +624,25 @@ public struct OrchestratorPattern: OrchestrationPattern {
                 let contextSnapshot = updatedContext
                 let previousResultsSnapshot = previousResults
                 
-                try await withThrowingTaskGroup(of: AgentResult.self) { taskGroup in
-                    for subtask in group {
-                        taskGroup.addTask {
-                            try await self.executeSubtask(
-                                subtask: subtask,
-                                agents: agents,
-                                context: contextSnapshot,
-                                previousResults: previousResultsSnapshot,
-                                progressTracker: progressTracker
-                            )
+                    // Check for cancellation before parallel execution
+                    try cancellationToken?.checkCancellation()
+                    
+                    try await withThrowingTaskGroup(of: AgentResult.self) { taskGroup in
+                        for subtask in group {
+                            taskGroup.addTask {
+                                // Check for cancellation in each parallel task
+                                try cancellationToken?.checkCancellation()
+                                
+                                return try await self.executeSubtask(
+                                    subtask: subtask,
+                                    agents: agents,
+                                    context: contextSnapshot,
+                                    previousResults: previousResultsSnapshot,
+                                    progressTracker: progressTracker,
+                                    cancellationToken: cancellationToken
+                                )
+                            }
                         }
-                    }
                     
                     var groupResults: [AgentResult] = []
                     for try await result in taskGroup {
@@ -536,10 +660,93 @@ public struct OrchestratorPattern: OrchestrationPattern {
                     previousResults.append(contentsOf: groupResults)
                 }
             }
+            
+            // Evaluate conditional branches after each group
+            let resultsMap = Dictionary(uniqueKeysWithValues: results.map { ($0.taskId, $0) })
+            let newSubtasks = try await evaluateConditionalBranches(
+                decomposition: finalDecomposition,
+                results: resultsMap,
+                agents: agents
+            )
+            
+            if !newSubtasks.isEmpty {
+                print("🔄 OrchestratorPattern: Adding \(newSubtasks.count) dynamically created subtasks from conditional branches")
+                finalDecomposition.addSubtasks(newSubtasks)
+                
+                // Recalculate parallel groups with new subtasks
+                let updatedParallelGroups = finalDecomposition.getParallelizableGroups()
+                
+                // Add new groups that can be executed
+                if updatedParallelGroups.count > parallelGroups.count {
+                    // There are new groups to execute
+                    let newGroups = Array(updatedParallelGroups[parallelGroups.count...])
+                    for newGroup in newGroups {
+                        print("📦 OrchestratorPattern: Executing new group with \(newGroup.count) dynamically created subtasks")
+                        
+                        if newGroup.count == 1 || !newGroup.allSatisfy({ $0.canExecuteInParallel }) {
+                            // Sequential execution
+                            for subtask in newGroup {
+                                let result = try await executeSubtask(
+                                    subtask: subtask,
+                                    agents: agents,
+                                    context: updatedContext,
+                                    previousResults: previousResults,
+                                    progressTracker: progressTracker,
+                                    cancellationToken: cancellationToken
+                                )
+                                results.append(result)
+                                previousResults.append(result)
+                                
+                                if let updated = result.updatedContext {
+                                    updatedContext.merge(updated)
+                                }
+                            }
+                        } else {
+                            // Parallel execution
+                            let contextSnapshot = updatedContext
+                            let previousResultsSnapshot = previousResults
+                            
+                            try await withThrowingTaskGroup(of: AgentResult.self) { taskGroup in
+                                for subtask in newGroup {
+                                    taskGroup.addTask {
+                                        try cancellationToken?.checkCancellation()
+                                        
+                                        return try await self.executeSubtask(
+                                            subtask: subtask,
+                                            agents: agents,
+                                            context: contextSnapshot,
+                                            previousResults: previousResultsSnapshot,
+                                            progressTracker: progressTracker,
+                                            cancellationToken: cancellationToken
+                                        )
+                                    }
+                                }
+                                
+                                var groupResults: [AgentResult] = []
+                                for try await result in taskGroup {
+                                    groupResults.append(result)
+                                }
+                                
+                                for result in groupResults {
+                                    if let updated = result.updatedContext {
+                                        updatedContext.merge(updated)
+                                    }
+                                }
+                                
+                                results.append(contentsOf: groupResults)
+                                previousResults.append(contentsOf: groupResults)
+                            }
+                        }
+                    }
+                }
+            }
         }
         
         specializedAgentsTime = Date().timeIntervalSince(specializedStartTime)
         print("✅ OrchestratorPattern: All specialized agents completed in \(String(format: "%.2f", specializedAgentsTime))s")
+        
+        // Check for cancellation before synthesis
+        try cancellationToken?.checkCancellation()
         
         // Step 5: Synthesize results using coordinator
         let synthesisStartTime = Date()
@@ -549,7 +756,7 @@ public struct OrchestratorPattern: OrchestrationPattern {
             await tracker.emit(.synthesisStarted)
         }
         
-        let synthesizedContent = try await synthesizeResults(results, context: updatedContext)
+        let synthesizedContent = try await synthesizeResults(results, context: updatedContext, originalTask: task, agents: agents)
         coordinatorSynthesisTime = Date().timeIntervalSince(synthesisStartTime)
         
         // Emit synthesis completed event
@@ -647,13 +854,14 @@ public struct OrchestratorPattern: OrchestrationPattern {
         )
     }
     
-    /// Execute a single subtask
+    /// Execute a single subtask with retry logic
     private func executeSubtask(
         subtask: DecomposedSubtask,
         agents: [any Agent],
         context: AgentContext,
         previousResults: [AgentResult],
-        progressTracker: OrchestrationProgressTracker? = nil
+        progressTracker: OrchestrationProgressTracker? = nil,
+        cancellationToken: WorkflowCancellationToken? = nil
     ) async throws -> AgentResult {
         print("🎯 OrchestratorPattern: Executing subtask '\(subtask.description.prefix(50))...'")
         
@@ -662,20 +870,6 @@ public struct OrchestratorPattern: OrchestrationPattern {
         
         guard let selectedAgent = agent else {
             print("⚠️ OrchestratorPattern: No agent found for subtask, using coordinator")
-            // Debug logging
-            await DebugLogger.shared.log(
-                location: "OrchestratorPattern.swift:executeSubtask",
-                message: "No agent found, using coordinator",
-                hypothesisId: "A",
-                data: [
-                    "subtaskId": subtask.id.uuidString,
-                    "subtaskDescription": String(subtask.description.prefix(100)),
-                    "requiredCapabilities": Array(subtask.requiredCapabilities).map { $0.rawValue },
-                    "agentName": subtask.agentName ?? "none",
-                    "availableAgentNames": agents.map { $0.name },
-                    "availableAgentCapabilities": Dictionary(uniqueKeysWithValues: agents.map { ($0.name, Array($0.capabilities.map { $0.rawValue })) })
-                ]
-            )
             let subtaskTask = AgentTask(description: subtask.description, requiredCapabilities: subtask.requiredCapabilities)
             // Emit subtask started with coordinator
             if let tracker = progressTracker {
@@ -689,54 +883,132 @@ public struct OrchestratorPattern: OrchestrationPattern {
             return result
         }
         
-        print("🤖 OrchestratorPattern: Selected agent '\(selectedAgent.name)' for subtask")
+        // Get retry policy for this agent and subtask
+        let retryPolicy = retryConfiguration.policy(for: selectedAgent, subtask: subtask)
         
-        // Emit subtask started event
-        if let tracker = progressTracker {
-            await tracker.emit(.subtaskStarted(subtask: subtask, agentId: selectedAgent.id, agentName: selectedAgent.name))
-        }
+        // Execute with retry logic
+        var attemptNumber = 0
+        var retryAttempts: [RetryAttempt] = []
         
-        // Build isolated context
-        let isolatedContext = try await contextBuilder.buildContext(
-            for: subtask,
-            baseContext: context,
-            previousResults: previousResults,
-            tokenBudget: 2000 // Default budget per agent
-        )
-        
-        // Track context tokens
-        await tokenTracker.trackContext(agentId: selectedAgent.id, context: isolatedContext)
-        
-        // Create subtask
-        let subtaskTask = AgentTask(
-            description: subtask.description,
-            requiredCapabilities: subtask.requiredCapabilities,
-            parameters: [:]
-        )
-        
-        // Track prompt tokens
-        let prompt = try await buildPrompt(from: subtaskTask, context: isolatedContext)
-        await tokenTracker.trackPrompt(agentId: selectedAgent.id, prompt: prompt)
-        
-        // Execute subtask
-        let result = try await selectedAgent.process(task: subtaskTask, context: isolatedContext)
-        
-        // Track response and tool call tokens
-        await tokenTracker.trackResponse(agentId: selectedAgent.id, response: result.content)
-        await tokenTracker.trackToolCalls(agentId: selectedAgent.id, toolCalls: result.toolCalls)
-        
-        print("✅ OrchestratorPattern: Subtask completed by '\(selectedAgent.name)'")
-        
-        // Emit subtask completed event
-        if let tracker = progressTracker {
-            if result.success {
-                await tracker.emit(.subtaskCompleted(subtask: subtask, result: result))
-            } else {
-                await tracker.emit(.subtaskFailed(subtask: subtask, error: result.error ?? "Unknown error"))
+        while true {
+            // Check for cancellation before each attempt
+            try cancellationToken?.checkCancellation()
+            
+            print("🤖 OrchestratorPattern: Selected agent '\(selectedAgent.name)' for subtask (attempt \(attemptNumber + 1)/\(retryPolicy.maxAttempts))")
+            
+            // Emit subtask started event (or retry event)
+            if let tracker = progressTracker {
+                if attemptNumber == 0 {
+                    await tracker.emit(.subtaskStarted(subtask: subtask, agentId: selectedAgent.id, agentName: selectedAgent.name))
+                } else {
+                    let delay = retryPolicy.delay(for: attemptNumber - 1)
+                    let previousError = retryAttempts.last?.error ?? "Unknown error"
+                    await tracker.emit(.subtaskRetry(subtask: subtask, attemptNumber: attemptNumber, delay: delay, previousError: previousError))
+                }
+            }
+            
+            // Wait for retry delay if this is a retry
+            if attemptNumber > 0 {
+                let delay = retryPolicy.delay(for: attemptNumber - 1)
+                if delay > 0 {
+                    print("⏳ OrchestratorPattern: Waiting \(delay)s before retry attempt \(attemptNumber + 1)...")
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+            }
+            
+            do {
+                // Build isolated context
+                let isolatedContext = try await contextBuilder.buildContext(
+                    for: subtask,
+                    baseContext: context,
+                    previousResults: previousResults,
+                    tokenBudget: 2000 // Default budget per agent
+                )
+                
+                // Track context tokens
+                await tokenTracker.trackContext(agentId: selectedAgent.id, context: isolatedContext)
+                
+                // Create subtask
+                let subtaskTask = AgentTask(
+                    description: subtask.description,
+                    requiredCapabilities: subtask.requiredCapabilities,
+                    parameters: [:]
+                )
+                
+                // Track prompt tokens
+                let prompt = try await buildPrompt(from: subtaskTask, context: isolatedContext)
+                await tokenTracker.trackPrompt(agentId: selectedAgent.id, prompt: prompt)
+                
+                // Execute subtask
+                let result = try await selectedAgent.process(task: subtaskTask, context: isolatedContext)
+                
+                // Track response and tool call tokens
+                await tokenTracker.trackResponse(agentId: selectedAgent.id, response: result.content)
+                await tokenTracker.trackToolCalls(agentId: selectedAgent.id, toolCalls: result.toolCalls)
+                
+                // Check if result indicates success
+                if result.success {
+                    print("✅ OrchestratorPattern: Subtask completed by '\(selectedAgent.name)'")
+                    
+                    // Emit subtask completed event
+                    if let tracker = progressTracker {
+                        await tracker.emit(.subtaskCompleted(subtask: subtask, result: result))
+                    }
+                    
+                    return result
+                } else {
+                    // Result indicates failure but no exception thrown
+                    let errorMessage = result.error ?? "Unknown error"
+                    print("⚠️ OrchestratorPattern: Subtask failed: \(errorMessage)")
+                    
+                    // Record retry attempt
+                    let retryAttempt = RetryAttempt(
+                        attemptNumber: attemptNumber,
+                        timestamp: Date(),
+                        error: errorMessage,
+                        delayBeforeAttempt: attemptNumber > 0 ? retryPolicy.delay(for: attemptNumber - 1) : 0
+                    )
+                    retryAttempts.append(retryAttempt)
+                    
+                    // Check if we should retry
+                    if retryPolicy.shouldRetry(attemptNumber: attemptNumber) {
+                        attemptNumber += 1
+                        continue
+                    } else {
+                        // Max retries reached
+                        if let tracker = progressTracker {
+                            await tracker.emit(.subtaskFailed(subtask: subtask, error: errorMessage))
+                        }
+                        return result
+                    }
+                }
+            } catch {
+                // Exception thrown during execution
+                let errorMessage = error.localizedDescription
+                print("❌ OrchestratorPattern: Subtask execution threw error: \(errorMessage)")
+                
+                // Record retry attempt
+                let retryAttempt = RetryAttempt(
+                    attemptNumber: attemptNumber,
+                    timestamp: Date(),
+                    error: errorMessage,
+                    delayBeforeAttempt: attemptNumber > 0 ? retryPolicy.delay(for: attemptNumber - 1) : 0
+                )
+                retryAttempts.append(retryAttempt)
+                
+                // Check if we should retry
+                if retryPolicy.shouldRetry(attemptNumber: attemptNumber) {
+                    attemptNumber += 1
+                    continue
+                } else {
+                    // Max retries reached, rethrow the error
+                    if let tracker = progressTracker {
+                        await tracker.emit(.subtaskFailed(subtask: subtask, error: errorMessage))
+                    }
+                    throw error
+                }
             }
         }
-        
-        return result
     }
     
     /// Find agent for a subtask
@@ -840,8 +1112,72 @@ public struct OrchestratorPattern: OrchestrationPattern {
         return nil
     }
     
+    /// Validate if the synthesized answer addresses the user's question
+    private func validateAnswer(_ answer: String, originalQuestion: String) async -> Bool {
+        // Simple validation: check if answer mentions key terms from question
+        // For section numbers like "1.4.4", check if answer contains that section
+        // For specific topics, check if answer addresses that topic
+        
+        let questionLower = originalQuestion.lowercased()
+        let answerLower = answer.lowercased()
+        
+        // Extract section numbers from question (e.g., "1.4.4")
+        let sectionPattern = #"\d+\.\d+\.\d+"#
+        if let sectionMatch = questionLower.range(of: sectionPattern, options: .regularExpression) {
+            let sectionNumber = String(questionLower[sectionMatch])
+            // Answer should mention this section number
+            return answerLower.contains(sectionNumber)
+        }
+        
+        // For other questions, check if key terms appear in answer
+        // This is a simple heuristic - can be enhanced later
+        let keyTerms = questionLower.components(separatedBy: .whitespacesAndNewlines)
+            .filter { $0.count > 3 && !["what", "is", "about", "the", "attached", "pdf", "document", "file"].contains($0) }
+        
+        // If we have key terms, check if at least some appear in the answer
+        guard !keyTerms.isEmpty else {
+            // No key terms to check, assume valid
+            return true
+        }
+        
+        // At least half of the key terms should appear in the answer
+        let matchingTerms = keyTerms.filter { answerLower.contains($0) }
+        return matchingTerms.count >= (keyTerms.count + 1) / 2
+    }
+    
+    /// Create and execute a refinement subtask when answer doesn't address the question
+    private func refineAnswer(
+        originalQuestion: String,
+        previousAnswer: String,
+        context: AgentContext,
+        agents: [any Agent]
+    ) async throws -> String {
+        // Create a specific refinement task
+        let refinementTask = AgentTask(
+            description: """
+            The previous answer did not specifically address the user's question: "\(originalQuestion)"
+            
+            Previous answer: \(previousAnswer.prefix(500))
+            
+            Please provide a specific answer to the user's question. If the question asks about a specific section (e.g., "1.4.4"), find and explain that section. If it asks about a specific topic, focus on that topic.
+            """,
+            requiredCapabilities: [.fileReading, .generalReasoning]
+        )
+        
+        // Find appropriate agent (prefer File Reader for file questions)
+        let agent = agents.first { $0.capabilities.contains(.fileReading) } ?? agents.first { $0.capabilities.contains(.generalReasoning) }
+        
+        guard let selectedAgent = agent else {
+            return previousAnswer // Fallback to previous answer
+        }
+        
+        // Execute refinement
+        let refinementResult = try await selectedAgent.process(task: refinementTask, context: context)
+        return refinementResult.content
+    }
+    
     /// Synthesize results using coordinator
-    private func synthesizeResults(_ results: [AgentResult], context: AgentContext) async throws -> String {
+    private func synthesizeResults(_ results: [AgentResult], context: AgentContext, originalTask: AgentTask, agents: [any Agent]) async throws -> String {
         guard !results.isEmpty else {
             return "No results from agents."
         }
@@ -850,17 +1186,34 @@ public struct OrchestratorPattern: OrchestrationPattern {
             return results[0].content
         }
         
-        // Summarize results
-        let summarizedResults = try await resultSummarizer.summarizeResults(results, level: .medium)
+        // Format results for user-facing synthesis (no agent references)
+        let summarizedResults = try await resultSummarizer.formatResultsForSynthesis(results, level: .medium)
         
-        // Create synthesis task
+        let searchEvidence = results.compactMap { $0.data["rawSearchResults"] }.joined(separator: "\n\n")
+        let searchEvidenceBlock = searchEvidence.isEmpty ? "" : """
+            Search Results (verbatim):
+            \(searchEvidence)
+            
+            """
+        
+        // Create synthesis task with user-focused prompt
         let synthesisTask = AgentTask(
             description: """
-            Synthesize the following agent results into a coherent, comprehensive response.
-            Focus on the key findings and present them clearly.
+            Please provide a clear and comprehensive answer to the following question.
             
-            Agent Results:
+            Question: \(originalTask.description)
+            
+            Information gathered:
             \(summarizedResults)
+            
+            \(searchEvidenceBlock)Instructions:
+            - Answer the question directly and naturally
+            - Present the information as if you gathered it yourself
+            - Do not mention agents, results, synthesis, or the process of gathering information
+            - Focus entirely on providing a helpful, well-organized answer to the user
+            - If Search Results are provided, use ONLY those results for factual claims
+            - If the Search Results do not contain the answer, say so and ask for clarification
+            - When Search Results are provided, include a short sources list with URLs
             """,
             requiredCapabilities: [.generalReasoning]
         )
@@ -879,7 +1232,25 @@ public struct OrchestratorPattern: OrchestrationPattern {
         )
         
         let synthesisResult = try await coordinator.process(task: synthesisTask, context: enforcedContext)
-        return synthesisResult.content
+        let synthesizedAnswer = synthesisResult.content
+        
+        // Validate if the answer addresses the original question
+        let originalQuestion = originalTask.description
+        let isValid = await validateAnswer(synthesizedAnswer, originalQuestion: originalQuestion)
+        
+        if !isValid {
+            print("⚠️ OrchestratorPattern: Synthesized answer does not address the question, refining...")
+            // Refine the answer
+            let refinedAnswer = try await refineAnswer(
+                originalQuestion: originalQuestion,
+                previousAnswer: synthesizedAnswer,
+                context: context,
+                agents: agents
+            )
+            return refinedAnswer
+        }
+        
+        return synthesizedAnswer
     }
     
     /// Fallback execution when parsing fails
@@ -1121,18 +1492,31 @@ public struct OrchestratorPattern: OrchestrationPattern {
         }
         
         // Calculate file content tokens
-        // If we have file content savings metadata, use original file content tokens
-        // Otherwise, estimate based on file references
+        // If we have file content savings metadata, use original file content tokens.
+        // Otherwise, estimate based on file references.
+        //
+        // IMPORTANT: Images are not "file content tokens" in the same way as text/PDFs.
+        // Counting 100k tokens per image massively inflates the baseline and produces misleading savings.
         let fileContentTokens: Int
         if let originalFileTokensStr = context.metadata["tokens_file_content_original"],
            let originalFileTokens = Int(originalFileTokensStr) {
-            // Use original file content tokens (before RAG optimization) for accurate comparison
             fileContentTokens = originalFileTokens
         } else {
-            // Estimate file content tokens based on file references
-            // For large PDFs, estimate ~100k tokens per file (conservative estimate)
-            // For smaller files, estimate based on file path length (rough heuristic)
-            fileContentTokens = context.fileReferences.count * 100_000 // Conservative estimate for large files
+            let supportedImageExtensions: Set<String> = [
+                "jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "bmp", "tiff", "tif"
+            ]
+            let (imageCount, nonImageCount) = context.fileReferences.reduce(into: (0, 0)) { acc, path in
+                let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+                if supportedImageExtensions.contains(ext) {
+                    acc.0 += 1
+                } else {
+                    acc.1 += 1
+                }
+            }
+            
+            // Non-image files (especially PDFs) can be very large in tokens.
+            // Images are represented via features/signals, not full tokenized file content.
+            fileContentTokens = (nonImageCount * 100_000) + (imageCount * 5_000)
         }
         
         let fileRefTokens = context.fileReferences.joined(separator: ", ").count / 4 // Just file paths
@@ -1225,7 +1609,16 @@ public struct OrchestratorPattern: OrchestrationPattern {
     /// Internal method that returns both decision and reason
     private func shouldDelegateInternal(task: AgentTask, context: AgentContext) async throws -> (shouldDelegate: Bool, reason: String?) {
         print("🤔 OrchestratorPattern: Evaluating delegation decision for task '\(task.description.prefix(50))...'")
-        
+
+        let hasCurrentFiles = (context.metadata["currentFileReferences"]?.isEmpty == false)
+        let hasFiles = hasCurrentFiles || !context.fileReferences.isEmpty
+        if let forcedDecision = DelegationDecider().forcedDecision(
+            taskDescription: task.description,
+            hasFiles: hasFiles
+        ) {
+            return (forcedDecision.shouldDelegate, forcedDecision.reason)
+        }
+
         // Truncate task description for decision prompt if too long
         let tokenCounter = TokenCounter()
         var taskDescription = task.description
@@ -1437,4 +1830,106 @@ public struct OrchestratorPattern: OrchestrationPattern {
             updatedContext: updatedContext
         )
     }
+    
+    /// Create and save a checkpoint
+    /// - Parameters:
+    ///   - phase: Current orchestration phase
+    ///   - orchestrationState: Current orchestration state
+    ///   - task: Current task
+    ///   - context: Current context
+    ///   - agents: Available agents
+    ///   - callback: Callback to save the checkpoint
+    private func createCheckpoint(
+        phase: OrchestrationPhase,
+        orchestrationState: OrchestrationState,
+        task: AgentTask,
+        context: AgentContext,
+        agents: [any Agent],
+        callback: @Sendable (WorkflowCheckpoint) async throws -> Void
+    ) async {
+        // Get conversationId and messageId from context metadata
+        guard let conversationIdStr = context.metadata["conversationId"],
+              let conversationId = UUID(uuidString: conversationIdStr),
+              let messageIdStr = context.metadata["messageId"],
+              let messageId = UUID(uuidString: messageIdStr) else {
+            print("⚠️ OrchestratorPattern: Cannot create checkpoint - missing conversationId or messageId in context")
+            return
+        }
+        
+        do {
+            let checkpoint = try WorkflowCheckpoint.create(
+                conversationId: conversationId,
+                messageId: messageId,
+                phase: phase,
+                orchestrationState: orchestrationState,
+                task: task,
+                context: context,
+                availableAgents: agents,
+                description: "Checkpoint at \(phase.rawValue) phase"
+            )
+            
+            try await callback(checkpoint)
+            print("✅ OrchestratorPattern: Checkpoint created at \(phase.rawValue) phase")
+        } catch {
+            print("⚠️ OrchestratorPattern: Failed to create or save checkpoint: \(error)")
+        }
+    }
+    
+    /// Evaluate conditional branches and return new subtasks to execute
+    /// - Parameters:
+    ///   - decomposition: Current task decomposition
+    ///   - results: Current subtask results
+    ///   - agents: Available agents
+    /// - Returns: New subtasks to add based on branch evaluation
+    private func evaluateConditionalBranches(
+        decomposition: TaskDecomposition,
+        results: [UUID: AgentResult],
+        agents: [any Agent]
+    ) async throws -> [DecomposedSubtask] {
+        var newSubtasks: [DecomposedSubtask] = []
+        
+        for branch in decomposition.conditionalBranches {
+            // Check if this branch's dependency has completed
+            if let dependsOnId = branch.dependsOnSubtaskId,
+               results[dependsOnId] != nil {
+                // Evaluate the branch
+                let evaluation = try await branchEvaluator.evaluate(
+                    branch: branch,
+                    results: results,
+                    coordinator: coordinator
+                )
+                
+                print("🔀 OrchestratorPattern: Branch evaluation - Condition met: \(evaluation.conditionMet), Confidence: \(evaluation.confidence)")
+                
+                if !evaluation.subtasksToExecute.isEmpty {
+                    newSubtasks.append(contentsOf: evaluation.subtasksToExecute)
+                }
+            }
+        }
+        
+        return newSubtasks
+    }
+    
+    private func firstImagePath(in fileReferences: [String]) -> String? {
+        let supportedExtensions: Set<String> = [
+            "jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "bmp", "tiff", "tif"
+        ]
+        
+        for path in fileReferences {
+            let url = URL(fileURLWithPath: path)
+            if supportedExtensions.contains(url.pathExtension.lowercased()) {
+                return path
+            }
+        }
+        
+        return nil
+    }
+
+    private func currentAttachmentPaths(from context: AgentContext) -> [String] {
+        guard let raw = context.metadata["currentFileReferences"], !raw.isEmpty else {
+            return []
+        }
+        return raw.split(separator: "\n").map { String($0) }.filter { !$0.isEmpty }
+    }
+    
 }

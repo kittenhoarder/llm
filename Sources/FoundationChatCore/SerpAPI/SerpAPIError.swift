@@ -96,3 +96,4 @@ public enum SerpAPIError: LocalizedError {
     }
 }
 
+

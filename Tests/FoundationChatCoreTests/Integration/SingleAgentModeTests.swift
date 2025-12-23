@@ -54,7 +54,7 @@ final class SingleAgentModeTests: XCTestCase {
         let message = "Test message"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         // Process message in single-agent mode
         do {
@@ -92,7 +92,7 @@ final class SingleAgentModeTests: XCTestCase {
         let message = "Test search query"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         do {
             let result = try await agentService.processSingleAgentMessage(
@@ -136,7 +136,7 @@ final class SingleAgentModeTests: XCTestCase {
         let message = "What's in this image?"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         do {
             let result = try await agentService.processSingleAgentMessage(
@@ -187,7 +187,7 @@ final class SingleAgentModeTests: XCTestCase {
         let message = "Read this file"
         let userMessage = Message(role: .user, content: message, attachments: [fileAttachment])
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         do {
             let result = try await agentService.processSingleAgentMessage(
@@ -222,4 +222,3 @@ final class SingleAgentModeTests: XCTestCase {
         return Data(pngHeader)
     }
 }
-

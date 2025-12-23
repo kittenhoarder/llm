@@ -50,3 +50,4 @@ echo "You can now launch it from Applications or Spotlight"
 
 
 
+

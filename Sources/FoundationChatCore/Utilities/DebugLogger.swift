@@ -13,7 +13,7 @@ public actor DebugLogger {
     /// Shared singleton instance
     public static let shared = DebugLogger()
     
-    /// Default debug log path (relative to workspace root)
+    /// Default debug log path
     private let defaultLogPath: String
     
     /// Current session ID
@@ -24,13 +24,23 @@ public actor DebugLogger {
     
     /// Initialize the debug logger
     private init() {
+        let fileManager = FileManager.default
         // Default to workspace-relative path
         // This can be overridden via environment variable or configuration
         if let workspacePath = ProcessInfo.processInfo.environment["WORKSPACE_PATH"] {
             self.defaultLogPath = "\(workspacePath)/.cursor/debug.log"
+            return
+        }
+
+        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let appName = "FoundationChat"
+        let debugDir = appSupport?.appendingPathComponent(appName).appendingPathComponent("Logs", isDirectory: true)
+        if let debugDir {
+            try? fileManager.createDirectory(at: debugDir, withIntermediateDirectories: true)
+            self.defaultLogPath = debugDir.appendingPathComponent("debug.log").path
         } else {
-            // Fallback to hardcoded path (for development)
-            self.defaultLogPath = "/Users/owenperry/dev/llm/.cursor/debug.log"
+            // Last resort: use temporary directory
+            self.defaultLogPath = fileManager.temporaryDirectory.appendingPathComponent("foundationchat-debug.log").path
         }
     }
     
@@ -93,5 +103,3 @@ public actor DebugLogger {
         }
     }
 }
-
-

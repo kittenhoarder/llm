@@ -22,6 +22,7 @@ public class DatabaseManager {
     private let conversations = Table("conversations")
     private let messages = Table("messages")
     private let files = Table("files")
+    private let workflowCheckpoints = Table("workflow_checkpoints")
     
     /// Conversation table columns
     private let conversationId = Expression<UUID>("id")
@@ -52,6 +53,16 @@ public class DatabaseManager {
     private let fileEmbeddingCount = Expression<Int>("embedding_count")
     private let fileIsIndexed = Expression<Bool>("is_indexed")
     private let fileFileSize = Expression<Int64>("file_size")
+    
+    /// Workflow checkpoint table columns
+    private let checkpointId = Expression<UUID>("id")
+    private let checkpointConversationId = Expression<UUID>("conversation_id")
+    private let checkpointMessageId = Expression<UUID>("message_id")
+    private let checkpointPhase = Expression<String>("phase")
+    private let checkpointData = Expression<String>("checkpoint_data")
+    private let checkpointCreatedAt = Expression<Date>("created_at")
+    private let checkpointDescription = Expression<String?>("description")
+    private let checkpointCanResume = Expression<Bool>("can_resume")
     
     /// Initialize the database manager
     /// - Parameter dbPath: Path to the database file (defaults to app support directory)
@@ -179,9 +190,26 @@ public class DatabaseManager {
         // Note: is_indexed is already in CREATE TABLE
         // No need to ALTER TABLE for this column
         
+        // Create workflow_checkpoints table
+        try db.run(workflowCheckpoints.create(ifNotExists: true) { t in
+            t.column(checkpointId, primaryKey: true)
+            t.column(checkpointConversationId)
+            t.column(checkpointMessageId)
+            t.column(checkpointPhase)
+            t.column(checkpointData)
+            t.column(checkpointCreatedAt)
+            t.column(checkpointDescription)
+            t.column(checkpointCanResume, defaultValue: true)
+            t.foreignKey(checkpointConversationId, references: conversations, conversationId, delete: .cascade)
+            t.foreignKey(checkpointMessageId, references: messages, messageId, delete: .cascade)
+        })
+        
         // Create indexes
         try db.run(messages.createIndex(messageConversationId, ifNotExists: true))
         try db.run(conversations.createIndex(conversationUpdatedAt, ifNotExists: true))
+        try db.run(workflowCheckpoints.createIndex(checkpointConversationId, ifNotExists: true))
+        try db.run(workflowCheckpoints.createIndex(checkpointMessageId, ifNotExists: true))
+        try db.run(workflowCheckpoints.createIndex(checkpointCreatedAt, ifNotExists: true))
     }
     
     /// Save a conversation to the database
@@ -532,6 +560,107 @@ public class DatabaseManager {
     public func deleteFile(id: UUID) throws {
         
         let query = files.filter(fileId == id)
+        try db.run(query.delete())
+    }
+    
+    /// Save a workflow checkpoint
+    /// - Parameter checkpoint: The checkpoint to save
+    public func saveWorkflowCheckpoint(_ checkpoint: WorkflowCheckpoint) throws {
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(checkpoint)
+        guard let jsonString = String(data: data, encoding: .utf8) else {
+            throw NSError(domain: "DatabaseManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode checkpoint"])
+        }
+        
+        let insert = workflowCheckpoints.insert(
+            checkpointId <- checkpoint.id,
+            checkpointConversationId <- checkpoint.conversationId,
+            checkpointMessageId <- checkpoint.messageId,
+            checkpointPhase <- checkpoint.phase.rawValue,
+            checkpointData <- jsonString,
+            checkpointCreatedAt <- checkpoint.createdAt,
+            checkpointDescription <- checkpoint.description,
+            checkpointCanResume <- checkpoint.canResume
+        )
+        
+        try db.run(insert)
+    }
+    
+    /// Load a workflow checkpoint by ID
+    /// - Parameter id: The checkpoint ID
+    /// - Returns: The checkpoint if found, nil otherwise
+    public func loadWorkflowCheckpoint(id: UUID) throws -> WorkflowCheckpoint? {
+        let query = workflowCheckpoints.filter(checkpointId == id)
+        guard let row = try db.pluck(query) else {
+            return nil
+        }
+        
+        guard let jsonString = try? row.get(checkpointData),
+              let data = jsonString.data(using: .utf8),
+              let checkpoint = try? JSONDecoder().decode(WorkflowCheckpoint.self, from: data) else {
+            return nil
+        }
+        
+        return checkpoint
+    }
+    
+    /// Load all checkpoints for a conversation
+    /// - Parameter conversationId: The conversation ID
+    /// - Returns: Array of checkpoints sorted by creation date (newest first)
+    public func loadWorkflowCheckpoints(for conversationId: UUID) throws -> [WorkflowCheckpoint] {
+        var result: [WorkflowCheckpoint] = []
+        
+        let query = workflowCheckpoints
+            .filter(checkpointConversationId == conversationId)
+            .order(checkpointCreatedAt.desc)
+        
+        for row in try db.prepare(query) {
+            guard let jsonString = try? row.get(checkpointData),
+                  let data = jsonString.data(using: .utf8),
+                  let checkpoint = try? JSONDecoder().decode(WorkflowCheckpoint.self, from: data) else {
+                continue
+            }
+            
+            result.append(checkpoint)
+        }
+        
+        return result
+    }
+    
+    /// Load all checkpoints for a message
+    /// - Parameter messageId: The message ID
+    /// - Returns: Array of checkpoints sorted by creation date (newest first)
+    public func loadWorkflowCheckpoints(forMessage messageId: UUID) throws -> [WorkflowCheckpoint] {
+        var result: [WorkflowCheckpoint] = []
+        
+        let query = workflowCheckpoints
+            .filter(checkpointMessageId == messageId)
+            .order(checkpointCreatedAt.desc)
+        
+        for row in try db.prepare(query) {
+            guard let jsonString = try? row.get(checkpointData),
+                  let data = jsonString.data(using: .utf8),
+                  let checkpoint = try? JSONDecoder().decode(WorkflowCheckpoint.self, from: data) else {
+                continue
+            }
+            
+            result.append(checkpoint)
+        }
+        
+        return result
+    }
+    
+    /// Delete a workflow checkpoint
+    /// - Parameter id: The checkpoint ID
+    public func deleteWorkflowCheckpoint(id: UUID) throws {
+        let query = workflowCheckpoints.filter(checkpointId == id)
+        try db.run(query.delete())
+    }
+    
+    /// Delete all checkpoints for a conversation
+    /// - Parameter conversationId: The conversation ID
+    public func deleteWorkflowCheckpoints(for conversationId: UUID) throws {
+        let query = workflowCheckpoints.filter(checkpointConversationId == conversationId)
         try db.run(query.delete())
     }
 }

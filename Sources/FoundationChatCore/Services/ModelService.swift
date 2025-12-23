@@ -101,45 +101,43 @@ public actor ModelService {
     ///   - imagePaths: Array of image file paths to include
     /// - Returns: The model's response
     /// - Throws: Error if model is unavailable or request fails
-    /// Note: This method handles images by including them in the prompt.
-    /// The exact API for image segments may need adjustment based on FoundationModels implementation.
+    /// Note: This method currently uses on-device Vision analysis (OCR + basic detections)
+    /// and passes the extracted signals to the model as text.
     /// This method creates a request-scoped session for each call to support parallel execution.
     public func respond(to message: String, withImages imagePaths: [String]) async throws -> ModelResponse {
-        // Create a request-scoped session for this request
-        let requestSessionId = UUID().uuidString
-        let requestSession = createRequestSession(sessionId: requestSessionId)
+        let existingPaths = imagePaths.filter { FileManager.default.fileExists(atPath: $0) }
+        var imageBlocks: [String] = []
         
-        print("[DEBUG ModelService] respond(withImages:) called with \(imagePaths.count) images, sessionId: \(requestSessionId)")
-        
-        // Clear previous tool calls for this session before making the request
-        await tracker.clearSession(requestSessionId)
-        
-        // For now, include image references in the text message
-        // TODO: Update to use proper Transcript.ImageSegment when API is confirmed
-        let imageRefs = imagePaths.map { "[Image file: \(URL(fileURLWithPath: $0).lastPathComponent)]" }.joined(separator: "\n")
-        let fullMessage = "\(message)\n\nAttached images:\n\(imageRefs)"
-        
-        print("[DEBUG ModelService] Calling session.respond() with image references...")
-        let response = try await requestSession.respond(to: fullMessage)
-        print("[DEBUG ModelService] session.respond() completed")
-        
-        // Extract tool calls from tracker using the session ID
-        var toolNames = await tracker.getUniqueToolNames(for: requestSessionId)
-        
-        // Fallback: If no tools were tracked but we have tools available, try to infer from content
-        if toolNames.isEmpty {
-            let availableToolNames = tools.map { $0.name }
-            let inferred = ToolUsageInference.inferToolUsage(from: response.content, availableTools: availableToolNames)
-            if !inferred.isEmpty {
-                toolNames = inferred
+        for imagePath in existingPaths {
+            let analysis = await VisionAnalysisService.analyzeImage(atPath: imagePath)
+            var block = "Image: \(analysis.fileName)\nFile size: \(analysis.fileSizeBytes) bytes"
+            if let w = analysis.pixelWidth, let h = analysis.pixelHeight {
+                block += "\nDimensions: \(w)x\(h) px"
             }
+            if !analysis.classifications.isEmpty {
+                block += "\nLikely contents: \(analysis.classifications.joined(separator: ", "))"
+            }
+            block += "\nFaces detected: \(analysis.faceCount)"
+            if !analysis.barcodePayloads.isEmpty {
+                block += "\nBarcodes: \(analysis.barcodePayloads.joined(separator: ", "))"
+            }
+            if let text = analysis.recognizedText, !text.isEmpty {
+                let maxChars = 6000
+                let clipped = text.count > maxChars ? String(text.prefix(maxChars)) + "\n…(truncated)" : text
+                block += "\n\nOCR text:\n\(clipped)"
+            }
+            imageBlocks.append(block)
         }
         
-        let toolCalls = toolNames.map { toolName in
-            ToolCall(toolName: toolName, arguments: "")
+        var prompt = message.isEmpty ? "Please help with the attached image(s)." : message
+        if !imageBlocks.isEmpty {
+            prompt += "\n\nAttached image analysis signals (OCR + detections; no direct pixel access):\n\n"
+            prompt += imageBlocks.joined(separator: "\n\n---\n\n")
+        } else if !imagePaths.isEmpty {
+            prompt += "\n\n(No readable image files were found at the provided paths.)"
         }
         
-        return ModelResponse(content: response.content, toolCalls: toolCalls)
+        return try await respond(to: prompt)
     }
     
     /// Send a message and get a response (non-streaming)
@@ -148,15 +146,6 @@ public actor ModelService {
     /// - Throws: Error if model is unavailable or request fails
     /// Note: This method creates a request-scoped session for each call to support parallel execution.
     public func respond(to message: String) async throws -> ModelResponse {
-        // #region debug log
-        await DebugLogger.shared.log(
-            location: "ModelService.swift:respond",
-            message: "respond() called - entering",
-            hypothesisId: "F",
-            data: ["hasTools": !tools.isEmpty, "toolCount": tools.count]
-        )
-        // #endregion
-        
         // Create a request-scoped session for this request
         // This ensures thread safety when multiple requests run in parallel
         let requestSessionId = UUID().uuidString
@@ -167,27 +156,9 @@ public actor ModelService {
         // Clear previous tool calls for this session before making the request
         await tracker.clearSession(requestSessionId)
         
-        // #region debug log
-        await DebugLogger.shared.log(
-            location: "ModelService.swift:respond",
-            message: "About to call session.respond()",
-            hypothesisId: "F",
-            data: ["sessionId": requestSessionId]
-        )
-        // #endregion
-        
         print("[DEBUG ModelService] Calling session.respond()...")
         let response = try await requestSession.respond(to: message)
         print("[DEBUG ModelService] session.respond() completed")
-        
-        // #region debug log
-        await DebugLogger.shared.log(
-            location: "ModelService.swift:respond",
-            message: "session.respond() completed successfully",
-            hypothesisId: "F",
-            data: ["sessionId": requestSessionId]
-        )
-        // #endregion
         
         // Extract tool calls from tracker using the session ID
         var toolNames = await tracker.getUniqueToolNames(for: requestSessionId)
@@ -445,4 +416,3 @@ public actor ModelService {
         }
     }
 }
-

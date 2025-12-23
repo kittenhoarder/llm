@@ -806,7 +806,14 @@ public class ChatViewModel: ObservableObject {
             )
             
         case .subtaskFailed(let subtask, let error):
-            state.subtaskStates[subtask.id] = .failed(error)
+            // Get existing retry attempts if any
+            let existingRetries: [RetryAttempt]
+            if case .failed(_, let retries) = state.subtaskStates[subtask.id] {
+                existingRetries = retries
+            } else {
+                existingRetries = []
+            }
+            state.subtaskStates[subtask.id] = .failed(error, retryAttempts: existingRetries)
             
             orchestrationEvent = OrchestrationEvent(
                 timestamp: timestamp,
@@ -814,6 +821,44 @@ public class ChatViewModel: ObservableObject {
                 description: "\(subtask.description) - Failed: \(error)",
                 subtaskId: subtask.id,
                 metadata: ["error": error]
+            )
+            
+        case .subtaskRetry(let subtask, let attemptNumber, let delay, let previousError):
+            // Update state to show retry in progress
+            // Keep existing retry attempts and add new one
+            let existingRetries: [RetryAttempt]
+            if case .failed(_, let retries) = state.subtaskStates[subtask.id] {
+                existingRetries = retries
+            } else {
+                existingRetries = []
+            }
+            
+            let retryAttempt = RetryAttempt(
+                attemptNumber: attemptNumber,
+                timestamp: timestamp,
+                error: previousError,
+                delayBeforeAttempt: delay
+            )
+            var updatedRetries = existingRetries
+            updatedRetries.append(retryAttempt)
+            
+            // Set state back to inProgress for the retry (use agent name from subtask)
+            let agentName = subtask.agentName ?? "Unknown"
+            // We'll use a placeholder UUID since we don't have direct access to agent registry here
+            // The actual agent ID will be set when subtaskStarted is emitted again
+            state.subtaskStates[subtask.id] = .inProgress(agentId: UUID(), agentName: agentName, startTime: timestamp)
+            
+            orchestrationEvent = OrchestrationEvent(
+                timestamp: timestamp,
+                eventType: .subtaskRetry,
+                description: "Retrying '\(subtask.description)' (attempt \(attemptNumber + 1)) after \(String(format: "%.1f", delay))s delay",
+                subtaskId: subtask.id,
+                agentName: subtask.agentName,
+                metadata: [
+                    "attemptNumber": String(attemptNumber),
+                    "delay": String(format: "%.1f", delay),
+                    "previousError": previousError
+                ]
             )
             
         case .synthesisStarted:

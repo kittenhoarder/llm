@@ -66,7 +66,9 @@ public struct ContentView: View {
         .background(Theme.background(for: effectiveColorScheme))
         .preferredColorScheme(colorScheme)
         .sheet(isPresented: $showSettings) {
-            SettingsView()
+            if let vm = viewModel {
+                SettingsView(viewModel: vm)
+            }
         }
         // Global keyboard shortcuts using focusedSceneValue or commands
         .onKeyPress(.upArrow) {

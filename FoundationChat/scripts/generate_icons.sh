@@ -37,3 +37,4 @@ echo "Icons generated in $ICON_DIR"
 
 
 
+

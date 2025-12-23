@@ -59,7 +59,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         let message1 = "I'm working on a Swift project about machine learning"
         let userMessage1 = Message(role: .user, content: message1)
         conversation.messages.append(userMessage1)
-        try conversationService.addMessage(userMessage1, to: conversationId)
+        try await conversationService.addMessage(userMessage1, to: conversationId)
         
         let result1 = try await agentService.processMessage(
             message1,
@@ -72,7 +72,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         // Add assistant message
         let assistantMessage1 = Message(role: .assistant, content: result1.content, toolCalls: result1.toolCalls)
         conversation.messages.append(assistantMessage1)
-        try conversationService.addMessage(assistantMessage1, to: conversationId)
+        try await conversationService.addMessage(assistantMessage1, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         // Reload conversation
@@ -82,7 +82,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         let message2 = "What programming language am I using?"
         let userMessage2 = Message(role: .user, content: message2)
         conversation.messages.append(userMessage2)
-        try conversationService.addMessage(userMessage2, to: conversationId)
+        try await conversationService.addMessage(userMessage2, to: conversationId)
         
         let result2 = try await agentService.processMessage(
             message2,
@@ -93,7 +93,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         // Add assistant message
         let assistantMessage2 = Message(role: .assistant, content: result2.content, toolCalls: result2.toolCalls)
         conversation.messages.append(assistantMessage2)
-        try conversationService.addMessage(assistantMessage2, to: conversationId)
+        try await conversationService.addMessage(assistantMessage2, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         XCTAssertTrue(result2.success, "Second message should succeed")
@@ -134,7 +134,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         let message1 = "Search for information about Swift"
         let userMessage1 = Message(role: .user, content: message1)
         conversation.messages.append(userMessage1)
-        try conversationService.addMessage(userMessage1, to: conversationId)
+        try await conversationService.addMessage(userMessage1, to: conversationId)
         
         let result1 = try await agentService.processMessage(
             message1,
@@ -147,7 +147,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         // Add assistant message
         let assistantMessage1 = Message(role: .assistant, content: result1.content, toolCalls: result1.toolCalls)
         conversation.messages.append(assistantMessage1)
-        try conversationService.addMessage(assistantMessage1, to: conversationId)
+        try await conversationService.addMessage(assistantMessage1, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         // Check that context was updated
@@ -161,7 +161,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         let message2 = "What did you find about Swift?"
         let userMessage2 = Message(role: .user, content: message2)
         conversation.messages.append(userMessage2)
-        try conversationService.addMessage(userMessage2, to: conversationId)
+        try await conversationService.addMessage(userMessage2, to: conversationId)
         
         let result2 = try await agentService.processMessage(
             message2,
@@ -172,7 +172,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         // Add assistant message
         let assistantMessage2 = Message(role: .assistant, content: result2.content, toolCalls: result2.toolCalls)
         conversation.messages.append(assistantMessage2)
-        try conversationService.addMessage(assistantMessage2, to: conversationId)
+        try await conversationService.addMessage(assistantMessage2, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         XCTAssertTrue(result2.success, "Second agent should succeed")
@@ -206,7 +206,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         let message1 = "Search for current information about Python"
         let userMessage1 = Message(role: .user, content: message1)
         conversation.messages.append(userMessage1)
-        try conversationService.addMessage(userMessage1, to: conversationId)
+        try await conversationService.addMessage(userMessage1, to: conversationId)
         
         let result1 = try await agentService.processMessage(
             message1,
@@ -219,7 +219,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         // Add assistant message
         let assistantMessage1 = Message(role: .assistant, content: result1.content, toolCalls: result1.toolCalls)
         conversation.messages.append(assistantMessage1)
-        try conversationService.addMessage(assistantMessage1, to: conversationId)
+        try await conversationService.addMessage(assistantMessage1, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         // Check if tools were used
@@ -233,7 +233,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         let message2 = "Summarize what you found"
         let userMessage2 = Message(role: .user, content: message2)
         conversation.messages.append(userMessage2)
-        try conversationService.addMessage(userMessage2, to: conversationId)
+        try await conversationService.addMessage(userMessage2, to: conversationId)
         
         let result2 = try await agentService.processMessage(
             message2,
@@ -244,7 +244,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         // Add assistant message
         let assistantMessage2 = Message(role: .assistant, content: result2.content, toolCalls: result2.toolCalls)
         conversation.messages.append(assistantMessage2)
-        try conversationService.addMessage(assistantMessage2, to: conversationId)
+        try await conversationService.addMessage(assistantMessage2, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         XCTAssertTrue(result2.success, "Second message should succeed")
@@ -282,7 +282,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         for messageText in messages {
             let userMessage = Message(role: .user, content: messageText)
             conversation.messages.append(userMessage)
-            try conversationService.addMessage(userMessage, to: conversationId)
+            try await conversationService.addMessage(userMessage, to: conversationId)
             
             let result = try await agentService.processMessage(
                 messageText,
@@ -293,7 +293,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
             
             let assistantMessage = Message(role: .assistant, content: result.content, toolCalls: result.toolCalls)
             conversation.messages.append(assistantMessage)
-            try conversationService.addMessage(assistantMessage, to: conversationId)
+            try await conversationService.addMessage(assistantMessage, to: conversationId)
             try conversationService.updateConversation(conversation)
             
             // Reload for next iteration
@@ -304,7 +304,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         let finalMessage = "What is my project about?"
         let finalUserMessage = Message(role: .user, content: finalMessage)
         conversation.messages.append(finalUserMessage)
-        try conversationService.addMessage(finalUserMessage, to: conversationId)
+        try await conversationService.addMessage(finalUserMessage, to: conversationId)
         
         let finalResult = try await agentService.processMessage(
             finalMessage,
@@ -314,7 +314,7 @@ final class MultiAgentContextualModeTests: XCTestCase {
         
         let finalAssistantMessage = Message(role: .assistant, content: finalResult.content, toolCalls: finalResult.toolCalls)
         conversation.messages.append(finalAssistantMessage)
-        try conversationService.addMessage(finalAssistantMessage, to: conversationId)
+        try await conversationService.addMessage(finalAssistantMessage, to: conversationId)
         try conversationService.updateConversation(conversation)
         
         XCTAssertTrue(finalResult.success, "Final message should succeed")
@@ -360,4 +360,3 @@ final class MultiAgentContextualModeTests: XCTestCase {
         XCTAssertTrue(true, "Contextual mode recommendation documented")
     }
 }
-
