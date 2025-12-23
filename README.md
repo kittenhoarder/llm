@@ -337,6 +337,18 @@ Sources/
 - **Data Analysis**: Calculations and statistical operations
 - **Vision**: Image analysis and understanding
 
+### User Interface
+
+- **Markdown Support**: Rich text rendering for clear, structured agent responses.
+- **Code Highlighting**: Syntax highlighting for code blocks with language detection.
+- **Developer Tools**: One-click copy for code blocks and native text selection support.
+- **Agent Configuration**: Robust settings persistence and granular agent control.
+
+### Enhanced Robustness
+
+- **Resilient Parsing**: Advanced JSON parsing (with `repair_json` fallback) for reliable agent task decomposition.
+- **Filesystem Safety**: Improved "Clear All Data" functionality ensuring complete cleanup of LEANN index files.
+
 ## Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - Detailed architecture documentation
