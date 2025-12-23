@@ -379,7 +379,8 @@ public actor RAGService {
         
         // For now, we'll use a broad search to get documents, then filter
         // Note: This is inefficient but SVDB doesn't support metadata queries
-        let dummyQuery = Array(repeating: 0.0, count: 300) // Default embedding dimension
+        let dimension = embeddingService.embeddingDimension()
+        let dummyQuery = Array(repeating: 0.0, count: dimension)
         let allResults = collection.search(query: dummyQuery, num_results: 1000)
         
         var documentsToRemove: [UUID] = []
@@ -441,6 +442,19 @@ public actor RAGService {
         // Release the collection from SVDB
         svdb.releaseCollection(collectionName)
         print("🗑️ RAGService: Released collection \(collectionName)")
+    }
+    
+    /// Clear all SVDB data (all collections and storage)
+    /// This is a nuclear option that deletes everything
+    /// - Throws: Error if clearing fails
+    public func clearAllData() async throws {
+        // Delete the entire SVDB storage directory
+        if fileManager.fileExists(atPath: storageDirectory.path) {
+            try fileManager.removeItem(at: storageDirectory)
+            // Recreate empty directory
+            try fileManager.createDirectory(at: storageDirectory, withIntermediateDirectories: true)
+            print("🗑️ RAGService: Cleared all SVDB storage data")
+        }
     }
     
     /// Index a single message for RAG retrieval
@@ -749,4 +763,3 @@ public enum RAGError: Error, LocalizedError, Sendable {
         }
     }
 }
-

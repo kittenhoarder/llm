@@ -198,7 +198,7 @@ public actor EmbeddingService {
     
     /// Get the dimension of embeddings
     /// - Returns: Embedding dimension (default: 300 for word embeddings)
-    public func embeddingDimension() -> Int {
+    public nonisolated func embeddingDimension() -> Int {
         // NaturalLanguage word embeddings typically have 300 dimensions
         // This may vary by model, but 300 is a safe default
         return 300
@@ -220,4 +220,3 @@ public enum EmbeddingError: Error, LocalizedError, Sendable {
         }
     }
 }
-

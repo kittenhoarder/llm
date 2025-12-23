@@ -17,8 +17,11 @@ public struct CollaborativePattern: OrchestrationPattern {
         task: AgentTask,
         agents: [any Agent],
         context: AgentContext,
-        progressTracker: OrchestrationProgressTracker? = nil
+        progressTracker: OrchestrationProgressTracker? = nil,
+        checkpointCallback: (@Sendable (WorkflowCheckpoint) async throws -> Void)? = nil,
+        cancellationToken: WorkflowCancellationToken? = nil
     ) async throws -> AgentResult {
+        try cancellationToken?.checkCancellation()
         guard !agents.isEmpty else {
             throw AgentOrchestratorError.noAgentsAvailable
         }
@@ -29,6 +32,7 @@ public struct CollaborativePattern: OrchestrationPattern {
         
         // First round: all agents process independently
         for agent in agents {
+            try cancellationToken?.checkCancellation()
             let result = try await agent.process(task: task, context: sharedContext)
             results.append(result)
             
@@ -43,6 +47,8 @@ public struct CollaborativePattern: OrchestrationPattern {
             var refinedResults: [AgentResult] = []
             
             for (index, agent) in agents.enumerated() {
+                try cancellationToken?.checkCancellation()
+                
                 // Create a task that includes other agents' results
                 let otherResults = results.enumerated()
                     .filter { $0.offset != index }

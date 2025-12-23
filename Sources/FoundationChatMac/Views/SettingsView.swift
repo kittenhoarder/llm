@@ -10,6 +10,7 @@ import FoundationChatCore
 
 @available(macOS 26.0, *)
 struct SettingsView: View {
+    @ObservedObject var viewModel: ChatViewModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var systemColorScheme
     @AppStorage("fontSizeAdjustment") private var fontSizeAdjustment: Double = 14
@@ -350,14 +351,14 @@ struct SettingsView: View {
                                 HStack {
                                     Image(systemName: "trash")
                                         .foregroundColor(.red.opacity(0.8))
-                                    Text("Clear All Conversations")
+                                    Text("Clear All Data")
                                         .foregroundColor(.red.opacity(0.8))
                                 }
                                 .font(Theme.titleFont)
                             }
                             .buttonStyle(.plain)
                             
-                            Text("This will permanently delete all conversations and messages.")
+                            Text("This will permanently delete all conversations, messages, file attachments, and RAG indexes. This cannot be undone.")
                                 .font(Theme.captionFont)
                                 .foregroundColor(Theme.textSecondary(for: effectiveColorScheme))
                         }
@@ -397,7 +398,7 @@ struct SettingsView: View {
                 clearAllData()
             }
         } message: {
-            Text("All conversations will be permanently deleted. This cannot be undone.")
+            Text("This will permanently delete:\n\n• All conversations\n• All messages\n• All file attachments\n• All RAG indexes\n\nThis action cannot be undone.")
         }
         .task {
             await loadAgents()
@@ -405,17 +406,66 @@ struct SettingsView: View {
     }
     
     private func clearAllData() {
-        // Clear the database by reinitializing
+        // Clear all database data, files, and RAG indexes
         Task {
             do {
                 let service = try ConversationService()
                 let conversations = try service.loadConversations()
+                
+                // Delete all conversations (this also deletes messages via cascade and files)
                 for conversation in conversations {
                     try await service.deleteConversation(id: conversation.id)
                 }
+                
+                // Clear all RAG indexes and SVDB data
+                let ragService = RAGService.shared
+                do {
+                    // Clear all SVDB data (this clears everything including orphaned collections)
+                    try await ragService.clearAllData()
+                    print("✅ Cleared all SVDB/RAG data")
+                } catch {
+                    print("⚠️ Warning: Could not clear all RAG data: \(error)")
+                    // Fallback: try to clear per conversation
+                    for conversation in conversations {
+                        do {
+                            try await ragService.deleteConversationIndexes(conversationId: conversation.id)
+                        } catch {
+                            print("⚠️ Warning: Could not delete RAG indexes for conversation \(conversation.id): \(error)")
+                        }
+                    }
+                }
+                
+                // Clear all file attachments by deleting the entire base directory
+                let fileManager = FileManager.default
+                let fileManagerService = FileManagerService.shared
+                let baseDir = await fileManagerService.getSandboxDirectory()
+                
+                // Delete entire base directory if it exists
+                if fileManager.fileExists(atPath: baseDir.path) {
+                    try fileManager.removeItem(at: baseDir)
+                    // Recreate empty directory
+                    try fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+                    print("✅ Cleared file attachments directory")
+                }
+                
+                // Clear UI state in ChatViewModel
+                await MainActor.run {
+                    viewModel.conversations = []
+                    viewModel.filteredConversations = []
+                    viewModel.selectedConversationId = nil
+                    viewModel.orchestrationStateByMessage = [:]
+                    viewModel.agentNameByMessage = [:]
+                }
+                
+                print("✅ All data cleared successfully")
             } catch {
-                print("Error clearing data: \(error)")
+                print("❌ Error clearing data: \(error)")
+                // Show error to user
+                await MainActor.run {
+                    // Could add an error alert here if needed
+                }
             }
+            
             await MainActor.run {
                 dismiss()
             }

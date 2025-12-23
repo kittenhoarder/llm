@@ -111,3 +111,4 @@ if let state = orchestrationState {
 
 If diagram exists but is hidden, the "Show Orchestration" button should appear below assistant messages. Click it to reveal the diagram.
 
+

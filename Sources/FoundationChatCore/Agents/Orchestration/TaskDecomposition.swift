@@ -59,13 +59,16 @@ public struct DecomposedSubtask: Sendable, Identifiable, Codable {
 @available(macOS 26.0, iOS 26.0, *)
 public struct TaskDecomposition: Sendable, Codable {
     /// All subtasks in this decomposition
-    public let subtasks: [DecomposedSubtask]
+    public var subtasks: [DecomposedSubtask]
+    
+    /// Conditional branches for dynamic routing
+    public var conditionalBranches: [ConditionalBranch]
     
     /// Sum of all subtask token estimates
     public let totalEstimatedTokens: Int
     
     /// Ordered list of subtask IDs for execution
-    public let executionOrder: [UUID]
+    public var executionOrder: [UUID]
     
     /// Mapping of subtask ID to subtask for quick lookup
     public var subtasksById: [UUID: DecomposedSubtask] {
@@ -74,12 +77,21 @@ public struct TaskDecomposition: Sendable, Codable {
     
     public init(
         subtasks: [DecomposedSubtask],
+        conditionalBranches: [ConditionalBranch] = [],
         totalEstimatedTokens: Int? = nil,
         executionOrder: [UUID]? = nil
     ) {
         self.subtasks = subtasks
+        self.conditionalBranches = conditionalBranches
         self.totalEstimatedTokens = totalEstimatedTokens ?? subtasks.compactMap { $0.estimatedTokenCost }.reduce(0, +)
         self.executionOrder = executionOrder ?? subtasks.map { $0.id }
+    }
+    
+    /// Add dynamically created subtasks
+    /// - Parameter newSubtasks: Subtasks to add
+    public mutating func addSubtasks(_ newSubtasks: [DecomposedSubtask]) {
+        subtasks.append(contentsOf: newSubtasks)
+        executionOrder.append(contentsOf: newSubtasks.map { $0.id })
     }
     
     /// Get a subtask by ID

@@ -55,7 +55,7 @@ final class OrchestratorModeTests: XCTestCase {
         let message = "Search for information about Swift"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         // Process message through orchestrator
         do {
@@ -107,7 +107,7 @@ final class OrchestratorModeTests: XCTestCase {
         let message = "Hello"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         do {
             let result = try await agentService.processMessage(
@@ -145,7 +145,7 @@ final class OrchestratorModeTests: XCTestCase {
         let message = "Search for Swift best practices and analyze code"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         do {
             let result = try await agentService.processMessage(
@@ -190,7 +190,7 @@ final class OrchestratorModeTests: XCTestCase {
         let message = "What's in this image?"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         do {
             let result = try await agentService.processMessage(
@@ -223,4 +223,3 @@ final class OrchestratorModeTests: XCTestCase {
         return Data(pngHeader)
     }
 }
-

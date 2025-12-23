@@ -34,6 +34,9 @@ public enum OrchestrationProgressEvent: Sendable {
     /// A subtask execution failed
     case subtaskFailed(subtask: DecomposedSubtask, error: String)
     
+    /// A subtask retry is being attempted
+    case subtaskRetry(subtask: DecomposedSubtask, attemptNumber: Int, delay: TimeInterval, previousError: String)
+    
     /// Coordinator started synthesizing results
     case synthesisStarted
     

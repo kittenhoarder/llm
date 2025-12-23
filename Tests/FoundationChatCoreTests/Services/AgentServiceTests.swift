@@ -70,7 +70,7 @@ final class AgentServiceTests: XCTestCase {
         let message = "Test message"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         // This may fail if ModelService is unavailable, which is acceptable
         do {
@@ -111,7 +111,7 @@ final class AgentServiceTests: XCTestCase {
         let message = "Test message"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         // This may fail if ModelService is unavailable, which is acceptable
         do {
@@ -153,7 +153,7 @@ final class AgentServiceTests: XCTestCase {
         let message = "Read this file"
         let userMessage = Message(role: .user, content: message)
         conversation.messages.append(userMessage)
-        try conversationService.addMessage(userMessage, to: conversationId)
+        try await conversationService.addMessage(userMessage, to: conversationId)
         
         // Process with file reference
         do {
@@ -210,4 +210,3 @@ final class AgentServiceTests: XCTestCase {
         XCTAssertTrue(config.selectedAgents.contains(webSearch.id), "Should include Web Search")
     }
 }
-

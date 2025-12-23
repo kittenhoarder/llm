@@ -22,6 +22,7 @@ import Foundation
 public class DataAnalysisAgent: BaseAgent, @unchecked Sendable {
     public init() {
         super.init(
+            id: AgentId.dataAnalysis,
             name: AgentName.dataAnalysis,
             description: "Performs data analysis, calculations, and statistical operations on data structures like CSV, JSON, and numerical data.",
             capabilities: [.dataAnalysis],
@@ -83,5 +84,4 @@ public class DataAnalysisAgent: BaseAgent, @unchecked Sendable {
         )
     }
 }
-
 

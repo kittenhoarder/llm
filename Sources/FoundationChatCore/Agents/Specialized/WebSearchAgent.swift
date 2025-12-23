@@ -17,6 +17,7 @@ import Foundation
 public class WebSearchAgent: BaseAgent, @unchecked Sendable {
     public init() {
         super.init(
+            id: AgentId.webSearch,
             name: AgentName.webSearch,
             description: "Performs web searches using SerpAPI (Google search) to find current information, facts, and real-time data.",
             capabilities: [.webSearch],
@@ -41,67 +42,62 @@ public class WebSearchAgent: BaseAgent, @unchecked Sendable {
         // Extract search query from task
         let searchQuery = task.parameters["query"] ?? task.description
         
-        // Build prompt for model with search capability
-        let prompt = """
-        The user wants to search for: \(searchQuery)
+        let tool = SerpAPIFoundationTool()
+        let searchResults = try await tool.call(arguments: .init(query: searchQuery))
         
-        Use the serpapi_search tool to find current information about this topic.
-        After getting search results, synthesize them into a comprehensive answer.
+        let errorPrefixes = [
+            "SerpAPI key not configured",
+            "SerpAPI authentication failed",
+            "SerpAPI rate limit exceeded",
+            "Network error while searching",
+            "SerpAPI returned an error",
+            "SerpAPI returned an invalid response"
+        ]
+        
+        if errorPrefixes.contains(where: { searchResults.hasPrefix($0) }) {
+            return AgentResult(
+                agentId: id,
+                taskId: task.id,
+                content: searchResults,
+                success: false,
+                error: "Search failed"
+            )
+        }
+        
+        let summaryPrompt = """
+        You are a web search assistant. Use the search results to answer the user's question.
+        
+        Question: \(task.description)
+        
+        Search Results:
+        \(searchResults)
+        
+        Provide a concise, direct answer. If possible, include a short sources list with URLs.
         """
         
-        // Debug logging
-        await DebugLogger.shared.log(
-            location: "WebSearchAgent.swift:process",
-            message: "About to get modelService and call respond()",
-            hypothesisId: "B",
-            data: [
-                "searchQuery": searchQuery,
-                "prompt": prompt,
-                "expectedTool": "serpapi_search"
-            ]
-        )
-        
-        // Get response from model (which will use the SerpAPI tool)
         let service = await modelService
-        
-        // Debug logging
-        await DebugLogger.shared.log(
-            location: "WebSearchAgent.swift:process",
-            message: "ModelService obtained, calling respond()",
-            hypothesisId: "B",
-            data: [
-                "modelServiceObtained": true
-            ]
-        )
-        
-        let response = try await service.respond(to: prompt)
-        
-        // Debug logging
-        await DebugLogger.shared.log(
-            location: "WebSearchAgent.swift:process",
-            message: "ModelService.respond() completed",
-            hypothesisId: "B",
-            data: [
-                "responseContentLength": response.content.count,
-                "responseContentPreview": String(response.content.prefix(AppConstants.toolResultTruncationLength)),
-                "toolCallsCount": response.toolCalls.count,
-                "toolCalls": response.toolCalls.map { ["toolName": $0.toolName, "arguments": $0.arguments] }
-            ]
-        )
+        let response = try await service.respond(to: summaryPrompt)
         
         // Update context with search results
         var updatedContext = context
-        updatedContext.toolResults["search:\(searchQuery)"] = response.content
+        updatedContext.toolResults["search:\(searchQuery)"] = searchResults
+        
+        var data = [String: String]()
+        data["rawSearchResults"] = searchResults
+        data["searchQuery"] = searchQuery
+        
+        let toolCalls = response.toolCalls.isEmpty
+            ? [ToolCall(toolName: "serpapi_search", arguments: searchQuery)]
+            : response.toolCalls
         
         return AgentResult(
             agentId: id,
             taskId: task.id,
             content: response.content,
             success: true,
-            toolCalls: response.toolCalls,
+            data: data,
+            toolCalls: toolCalls,
             updatedContext: updatedContext
         )
     }
 }
-
-

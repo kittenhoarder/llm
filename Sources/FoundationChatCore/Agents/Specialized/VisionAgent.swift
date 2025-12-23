@@ -13,16 +13,21 @@ import FoundationModels
 ///
 /// **Status**: ✅ Functional
 /// - Detects image file types (PNG, JPEG, HEIC, etc.)
-/// - Loads images from file paths
-/// - Passes images to ModelService with proper image segments
-/// - Handles image-specific prompts
+/// - Performs on-device analysis (OCR + basic detections) via Vision
+/// - Feeds extracted signals to ModelService as text (works without raw pixel support)
+/// - Handles image-specific prompts and follow-ups when needed
 @available(macOS 26.0, iOS 26.0, *)
 public class VisionAgent: BaseAgent, @unchecked Sendable {
     /// FileManagerService for reading image files
     private let fileManagerService = FileManagerService.shared
     
+    private static let supportedImageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "bmp", "tiff", "tif"
+    ]
+    
     public init() {
         super.init(
+            id: AgentId.visionAgent,
             name: AgentName.visionAgent,
             description: "Analyzes images using vision models. Can describe images, identify objects, read text in images, and answer questions about visual content.",
             capabilities: [.imageAnalysis],
@@ -40,7 +45,7 @@ public class VisionAgent: BaseAgent, @unchecked Sendable {
             }
             // Fallback: check file extension
             let ext = url.pathExtension.lowercased()
-            return ["jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "bmp", "tiff", "tif"].contains(ext)
+            return Self.supportedImageExtensions.contains(ext)
         }) else {
             return AgentResult(
                 agentId: id,
@@ -53,8 +58,24 @@ public class VisionAgent: BaseAgent, @unchecked Sendable {
         
         // Verify the file is actually an image
         let imageURL = URL(fileURLWithPath: imagePath)
-        guard let contentType = try? imageURL.resourceValues(forKeys: [.contentTypeKey]).contentType,
-              contentType.conforms(to: .image) else {
+        let fileExists = FileManager.default.fileExists(atPath: imagePath)
+        
+        guard fileExists else {
+            return AgentResult(
+                agentId: id,
+                taskId: task.id,
+                content: "Image not found at path: \(imagePath)",
+                success: false,
+                error: VisionAgentError.imageNotFound(imagePath).localizedDescription
+            )
+        }
+        
+        // Get contentType separately so we can use it in error logging
+        let contentType = try? imageURL.resourceValues(forKeys: [.contentTypeKey]).contentType
+        let ext = imageURL.pathExtension.lowercased()
+        let isImageByExtension = Self.supportedImageExtensions.contains(ext)
+        
+        guard (contentType?.conforms(to: .image) ?? false) || isImageByExtension else {
             return AgentResult(
                 agentId: id,
                 taskId: task.id,
@@ -64,22 +85,9 @@ public class VisionAgent: BaseAgent, @unchecked Sendable {
             )
         }
         
-        // Load image data
-        let imageData: Data
-        do {
-            imageData = try Data(contentsOf: imageURL)
-        } catch {
-            return AgentResult(
-                agentId: id,
-                taskId: task.id,
-                content: "Failed to load image from \(imagePath): \(error.localizedDescription)",
-                success: false,
-                error: error.localizedDescription
-            )
-        }
-        
         // Build prompt for image analysis
         let userQuery = task.description.isEmpty ? "What's in this image? Describe it in detail." : task.description
+        let analysis = await VisionAnalysisService.analyzeImage(atPath: imagePath)
         
         // Get ModelService and create a response with image
         let service = await modelService
@@ -87,14 +95,61 @@ public class VisionAgent: BaseAgent, @unchecked Sendable {
         // Create a prompt that includes both text and image
         // We'll use ModelService's respond method which will handle image segments
         // For now, we'll pass the image data through the context and let ModelService handle it
+        var analysisBlock = """
+        Image: \(imageURL.lastPathComponent)
+        Path: \(imagePath)
+        """
+        
+        if let w = analysis.pixelWidth, let h = analysis.pixelHeight {
+                analysisBlock += "\nDimensions: \(w)x\(h) px"
+            analysisBlock += "\nFile size: \(analysis.fileSizeBytes) bytes"
+            if !analysis.classifications.isEmpty {
+                analysisBlock += "\nLikely contents: \(analysis.classifications.joined(separator: ", "))"
+            }
+            analysisBlock += "\nFaces detected: \(analysis.faceCount)"
+            if !analysis.barcodePayloads.isEmpty {
+                analysisBlock += "\nBarcodes: \(analysis.barcodePayloads.joined(separator: ", "))"
+            }
+            if let text = analysis.recognizedText, !text.isEmpty {
+                let maxChars = 6000
+                let clipped = text.count > maxChars ? String(text.prefix(maxChars)) + "\n…(truncated)" : text
+                analysisBlock += "\n\nOCR text:\n\(clipped)"
+            }
+        } else {
+            analysisBlock += "\nFile size: \(analysis.fileSizeBytes) bytes"
+            analysisBlock += "\nFaces detected: \(analysis.faceCount)"
+        }
+        
+        let prompt = """
+        You are helping a user with an image-related request.
+        
+        User question:
+        \(userQuery)
+        
+        On-device extracted signals from the image (OCR + detections; no direct pixel access):
+        \(analysisBlock)
+        
+        Instructions:
+        - Answer using the extracted signals.
+        - If the question requires visual details not present in OCR/detections, ask a precise follow-up question.
+        """
         var updatedContext = context
         updatedContext.fileReferences.append(imagePath)
-        updatedContext.metadata["imageData"] = imageData.base64EncodedString() // Store as base64 for now
         updatedContext.metadata["imagePath"] = imagePath
+        updatedContext.metadata["imageFileName"] = analysis.fileName
+        updatedContext.metadata["imageFileSizeBytes"] = String(analysis.fileSizeBytes)
+        if let w = analysis.pixelWidth { updatedContext.metadata["imagePixelWidth"] = String(w) }
+        if let h = analysis.pixelHeight { updatedContext.metadata["imagePixelHeight"] = String(h) }
+        if !analysis.classifications.isEmpty { updatedContext.metadata["imageClassifications"] = analysis.classifications.joined(separator: ", ") }
+        updatedContext.metadata["imageFaceCount"] = String(analysis.faceCount)
+        if let text = analysis.recognizedText { updatedContext.metadata["imageRecognizedText"] = text }
+        if !analysis.barcodePayloads.isEmpty {
+            updatedContext.metadata["imageBarcodes"] = analysis.barcodePayloads.joined(separator: ", ")
+        }
         
         // Use ModelService to respond with image
         // Pass the image path so ModelService can handle it
-        let response = try await service.respond(to: userQuery, withImages: [imagePath])
+        let response = try await service.respond(to: prompt)
         
         return AgentResult(
             agentId: id,
@@ -116,7 +171,7 @@ public class VisionAgent: BaseAgent, @unchecked Sendable {
         }
         // Fallback: check file extension
         let ext = url.pathExtension.lowercased()
-        return ["jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "bmp", "tiff", "tif"].contains(ext)
+        return Self.supportedImageExtensions.contains(ext)
     }
 }
 
@@ -141,4 +196,3 @@ public enum VisionAgentError: Error, LocalizedError, Sendable {
         }
     }
 }
-

@@ -355,6 +355,8 @@ struct TimelineContentView: View {
             return .green
         case .subtaskFailed:
             return .red
+        case .subtaskRetry:
+            return .orange
         case .synthesisStarted, .synthesisCompleted:
             return .cyan
         case .orchestrationCompleted:
@@ -428,6 +430,8 @@ struct TimelineEventNode: View {
             return .green
         case .subtaskFailed:
             return .red
+        case .subtaskRetry:
+            return .orange
         case .synthesisStarted, .synthesisCompleted:
             return .cyan
         case .orchestrationCompleted:
@@ -451,6 +455,8 @@ struct TimelineEventNode: View {
             return "checkmark.circle.fill"
         case .subtaskFailed:
             return "xmark.circle.fill"
+        case .subtaskRetry:
+            return "arrow.clockwise.circle.fill"
         case .synthesisStarted:
             return "arrow.triangle.merge"
         case .synthesisCompleted:
@@ -533,11 +539,11 @@ struct SubtaskNodeView: View {
                     .font(.system(size: 12))
                     .foregroundColor(.green)
                     .transition(.scale.combined(with: .opacity))
-            case .failed:
+            case .failed(_, _):
                 Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 12))
-                    .foregroundColor(.red)
-                    .transition(.scale.combined(with: .opacity))
+                .font(.system(size: 12))
+                .foregroundColor(.red)
+                .transition(.scale.combined(with: .opacity))
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: state)
@@ -558,8 +564,10 @@ struct SubtaskNodeView: View {
                 Text("Completed")
                     .font(.system(size: 8))
                     .foregroundColor(.green)
-            case .failed(let error):
-                Text("Failed: \(error)")
+            case .failed(let error, let retryAttempts):
+                let errorText = String(describing: error)
+                let retryInfo = retryAttempts.isEmpty ? "" : " (\(retryAttempts.count) retries)"
+                Text("Failed: \(errorText)\(retryInfo)")
                     .font(.system(size: 8))
                     .foregroundColor(.red)
                     .lineLimit(1)
@@ -572,7 +580,7 @@ struct SubtaskNodeView: View {
         case .pending: return Theme.surfaceElevated(for: colorScheme)
         case .inProgress: return Theme.accent(for: colorScheme).opacity(0.1)
         case .completed: return Color.green.opacity(0.1)
-        case .failed: return Color.red.opacity(0.1)
+        case .failed(_, _): return Color.red.opacity(0.1)
         }
     }
     
@@ -581,7 +589,7 @@ struct SubtaskNodeView: View {
         case .pending: return Theme.border(for: colorScheme)
         case .inProgress: return Theme.accent(for: colorScheme)
         case .completed: return Color.green
-        case .failed: return Color.red
+        case .failed(_, _): return Color.red
         }
     }
 }

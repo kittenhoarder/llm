@@ -22,6 +22,7 @@ import Foundation
 public class CodeAnalysisAgent: BaseAgent, @unchecked Sendable {
     public init() {
         super.init(
+            id: AgentId.codeAnalysis,
             name: AgentName.codeAnalysis,
             description: "Analyzes code files to provide syntax analysis, structure insights, and identify patterns or potential issues.",
             capabilities: [.codeAnalysis],
@@ -93,5 +94,4 @@ public class CodeAnalysisAgent: BaseAgent, @unchecked Sendable {
         )
     }
 }
-
 

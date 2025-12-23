@@ -28,6 +28,7 @@ public enum OrchestrationEventType: String, Sendable, Codable {
     case subtaskStarted
     case subtaskCompleted
     case subtaskFailed
+    case subtaskRetry
     case synthesisStarted
     case synthesisCompleted
     case orchestrationCompleted
@@ -67,7 +68,23 @@ public enum SubtaskExecutionState: Sendable, Equatable, Codable {
     case pending
     case inProgress(agentId: UUID, agentName: String, startTime: Date)
     case completed(AgentResult)
-    case failed(String)
+    case failed(String, retryAttempts: [RetryAttempt])
+    
+    public init(pending: Void) {
+        self = .pending
+    }
+    
+    public init(inProgress agentId: UUID, agentName: String, startTime: Date) {
+        self = .inProgress(agentId: agentId, agentName: agentName, startTime: startTime)
+    }
+    
+    public init(completed result: AgentResult) {
+        self = .completed(result)
+    }
+    
+    public init(failed error: String, retryAttempts: [RetryAttempt] = []) {
+        self = .failed(error, retryAttempts: retryAttempts)
+    }
     
     public static func == (lhs: SubtaskExecutionState, rhs: SubtaskExecutionState) -> Bool {
         switch (lhs, rhs) {
@@ -77,10 +94,30 @@ public enum SubtaskExecutionState: Sendable, Equatable, Codable {
             return lhsId == rhsId && lhsName == rhsName
         case (.completed(let lhsResult), .completed(let rhsResult)):
             return lhsResult.agentId == rhsResult.agentId && lhsResult.taskId == rhsResult.taskId
-        case (.failed(let lhsError), .failed(let rhsError)):
-            return lhsError == rhsError
+        case (.failed(let lhsError, let lhsRetries), .failed(let rhsError, let rhsRetries)):
+            return lhsError == rhsError && lhsRetries.count == rhsRetries.count
         default:
             return false
+        }
+    }
+    
+    /// Get retry attempts count
+    public var retryAttemptsCount: Int {
+        switch self {
+        case .failed(_, let retries):
+            return retries.count
+        default:
+            return 0
+        }
+    }
+    
+    /// Get the error message if failed
+    public var errorMessage: String? {
+        switch self {
+        case .failed(let error, _):
+            return error
+        default:
+            return nil
         }
     }
 }

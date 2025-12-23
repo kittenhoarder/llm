@@ -22,8 +22,11 @@ public struct HierarchicalPattern: OrchestrationPattern {
         task: AgentTask,
         agents: [any Agent],
         context: AgentContext,
-        progressTracker: OrchestrationProgressTracker? = nil
+        progressTracker: OrchestrationProgressTracker? = nil,
+        checkpointCallback: (@Sendable (WorkflowCheckpoint) async throws -> Void)? = nil,
+        cancellationToken: WorkflowCancellationToken? = nil
     ) async throws -> AgentResult {
+        try cancellationToken?.checkCancellation()
         guard !agents.isEmpty else {
             throw AgentOrchestratorError.noAgentsAvailable
         }
@@ -58,6 +61,8 @@ public struct HierarchicalPattern: OrchestrationPattern {
         
         // Execute specialized agents
         for agent in specializedAgents {
+            try cancellationToken?.checkCancellation()
+            
             // Check if this agent's capabilities match the task
             if task.requiredCapabilities.isEmpty || 
                !task.requiredCapabilities.isDisjoint(with: agent.capabilities) {

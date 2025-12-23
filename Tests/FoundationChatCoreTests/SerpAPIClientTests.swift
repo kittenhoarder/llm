@@ -47,3 +47,4 @@ final class SerpAPIClientTests: XCTestCase {
     // Integration tests with mocked responses would go in a separate file
 }
 
+

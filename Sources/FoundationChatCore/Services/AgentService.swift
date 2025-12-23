@@ -67,6 +67,7 @@ public actor AgentService {
         // Used for orchestrating multi-agent workflows
         print("🤖 Creating coordinator agent...")
         let coordinator = BaseAgent(
+            id: AgentId.coordinator,
             name: AgentName.coordinator,
             description: "Coordinates tasks and delegates to specialized agents",
             capabilities: [.generalReasoning]
@@ -101,9 +102,10 @@ public actor AgentService {
     ) async throws -> AgentResult {
         print("🤖 AgentService.processMessage() called with message: \(message.prefix(50))...")
         
-        // Build context for this conversation (with SVDB optimization if enabled)
-        let context = await buildAgentContext(
-            for: conversationId,
+        let baseContext = conversationContexts[conversationId] ?? AgentContext()
+        let context = await ContextAssemblyService.shared.assemble(
+            baseContext: baseContext,
+            conversationId: conversationId,
             conversation: conversation,
             currentMessage: message
         )
@@ -205,9 +207,10 @@ public actor AgentService {
         
         print("✅ Agent found: \(resolvedAgent.name)")
         
-        // Build context for this conversation (with SVDB optimization if enabled)
-        let context = await buildAgentContext(
-            for: conversationId,
+        let baseContext = conversationContexts[conversationId] ?? AgentContext()
+        let context = await ContextAssemblyService.shared.assemble(
+            baseContext: baseContext,
+            conversationId: conversationId,
             conversation: conversation,
             fileReferences: fileReferences,
             currentMessage: message
@@ -215,6 +218,21 @@ public actor AgentService {
         
         print("🤖 Conversation history updated (\(context.conversationHistory.count) messages from \(conversation.messages.count) total)")
         print("🤖 File references: \(context.fileReferences.count) files")
+        
+        // #region debug log
+        await DebugLogger.shared.log(
+            location: "AgentService.swift:processSingleAgentMessage",
+            message: "Context built for agent",
+            hypothesisId: "A",
+            data: [
+                "agentId": agentId.uuidString,
+                "agentName": resolvedAgent.name,
+                "fileReferencesCount": context.fileReferences.count,
+                "fileReferences": context.fileReferences,
+                "message": message
+            ]
+        )
+        // #endregion
         
         // Create a simple task for the agent
         let task = AgentTask(
@@ -397,173 +415,7 @@ public actor AgentService {
     
     // MARK: - Helper Methods
     
-    /// Collect file references from conversation messages
-    /// - Parameters:
-    ///   - conversation: The conversation
-    ///   - additionalFiles: Additional file paths to include
-    /// - Returns: Array of unique file paths
-    private func collectFileReferences(
-        from conversation: Conversation,
-        additionalFiles: [String] = []
-    ) -> [String] {
-        var allFileReferences = additionalFiles
-        for message in conversation.messages.suffix(AppConstants.recentMessagesCount) {
-            allFileReferences.append(contentsOf: message.attachments.map { $0.sandboxPath })
-        }
-        return Array(Set(allFileReferences)) // Remove duplicates
-    }
-    
-    /// Build agent context for a conversation
-    /// - Parameters:
-    ///   - conversationId: Conversation ID
-    ///   - conversation: The conversation
-    ///   - fileReferences: Additional file references
-    /// - Returns: Built agent context
-    private func buildAgentContext(
-        for conversationId: UUID,
-        conversation: Conversation,
-        fileReferences: [String] = [],
-        currentMessage: String? = nil
-    ) async -> AgentContext {
-        // #region debug log
-        await DebugLogger.shared.log(
-            location: "AgentService.swift:buildAgentContext",
-            message: "buildAgentContext called",
-            hypothesisId: "B",
-            data: ["conversationId": conversationId.uuidString, "hasFileReferences": !fileReferences.isEmpty, "hasCurrentMessage": currentMessage != nil]
-        )
-        // #endregion
-        
-        var context = conversationContexts[conversationId] ?? AgentContext()
-        context.fileReferences = collectFileReferences(from: conversation, additionalFiles: fileReferences)
-        context.metadata["conversationId"] = conversationId.uuidString
-        
-        // Check if SVDB optimization is enabled
-        let useSVDB = UserDefaults.standard.object(forKey: UserDefaultsKey.useSVDBForContextOptimization) as? Bool ?? true
-        
-        if useSVDB, let query = currentMessage, !conversation.messages.isEmpty {
-            // Use SVDB-based optimization
-            do {
-                let contextOptimizer = ContextOptimizer()
-                let optimized = try await contextOptimizer.optimizeContextWithSVDB(
-                    messages: conversation.messages,
-                    query: query,
-                    conversationId: conversationId
-                )
-                
-                context.conversationHistory = optimized.messages
-                
-                // Track SVDB savings if available
-                let originalTokens = await TokenCounter().countTokens(conversation.messages)
-                let optimizedTokens = optimized.tokenUsage.messageTokens
-                if originalTokens > optimizedTokens {
-                    // Store savings in metadata for later tracking
-                    context.metadata["tokens_original_context"] = String(originalTokens)
-                    context.metadata["tokens_optimized_context"] = String(optimizedTokens)
-                    context.metadata["tokens_svdb_saved_context"] = String(originalTokens - optimizedTokens)
-                }
-                
-                print("📊 AgentService: SVDB optimization - Original: \(originalTokens) tokens, Optimized: \(optimizedTokens) tokens")
-            } catch {
-                // Fall back to full history if SVDB optimization fails
-                print("⚠️ AgentService: SVDB optimization failed, using full history: \(error.localizedDescription)")
-                context.conversationHistory = conversation.messages
-            }
-        } else {
-            // Use full conversation history
-            context.conversationHistory = conversation.messages
-        }
-        
-        // Retrieve RAG chunks if we have file references and a current message
-        if !context.fileReferences.isEmpty, let query = currentMessage {
-            do {
-                let ragService = RAGService.shared
-                let topK = UserDefaults.standard.integer(forKey: "ragTopK") > 0 
-                    ? UserDefaults.standard.integer(forKey: "ragTopK") 
-                    : 5
-                
-                // Enhance query for better semantic search - include section numbers if mentioned
-                var enhancedQuery = query
-                // Look for section references like "1.4.4", "section 1.4.4", etc.
-                if let sectionMatch = query.range(of: #"\d+\.\d+\.\d+"#, options: .regularExpression) {
-                    let sectionNumber = String(query[sectionMatch])
-                    enhancedQuery = "section \(sectionNumber) \(query)"
-                }
-                
-                // #region debug log
-                await DebugLogger.shared.log(
-                    location: "AgentService.swift:buildAgentContext",
-                    message: "Attempting RAG retrieval",
-                    hypothesisId: "B",
-                    data: [
-                        "originalQuery": String(query.prefix(100)),
-                        "enhancedQuery": String(enhancedQuery.prefix(100)),
-                        "fileReferencesCount": context.fileReferences.count,
-                        "topK": topK,
-                        "conversationId": conversationId.uuidString
-                    ]
-                )
-                // #endregion
-                
-                let chunks = try await ragService.searchRelevantChunks(
-                    query: enhancedQuery,
-                    fileIds: nil,
-                    conversationId: conversationId,
-                    topK: topK
-                )
-                
-                context.ragChunks = chunks
-                
-                // #region debug log
-                await DebugLogger.shared.log(
-                    location: "AgentService.swift:buildAgentContext",
-                    message: "RAG retrieval completed",
-                    hypothesisId: "B",
-                    data: [
-                        "chunksRetrieved": chunks.count,
-                        "chunkPreviews": chunks.prefix(3).map { String($0.content.prefix(100)) }
-                    ]
-                )
-                // #endregion
-            } catch {
-                // #region debug log
-                await DebugLogger.shared.log(
-                    location: "AgentService.swift:buildAgentContext",
-                    message: "RAG retrieval failed",
-                    hypothesisId: "B",
-                    data: ["error": error.localizedDescription]
-                )
-                // #endregion
-                print("⚠️ AgentService: RAG retrieval failed: \(error.localizedDescription)")
-            }
-        } else {
-            // #region debug log
-            await DebugLogger.shared.log(
-                location: "AgentService.swift:buildAgentContext",
-                message: "Skipping RAG retrieval",
-                hypothesisId: "B",
-                data: [
-                    "hasFileReferences": !context.fileReferences.isEmpty,
-                    "hasCurrentMessage": currentMessage != nil
-                ]
-            )
-            // #endregion
-        }
-        
-        // #region debug log
-        let ragChunksCount = context.ragChunks.count
-        let fileReferencesCount = context.fileReferences.count
-        let messageCount = context.conversationHistory.count
-        await DebugLogger.shared.log(
-            location: "AgentService.swift:buildAgentContext",
-            message: "buildAgentContext returning",
-            hypothesisId: "B",
-            data: ["ragChunksCount": ragChunksCount, "fileReferencesCount": fileReferencesCount, "messageCount": messageCount]
-        )
-        // #endregion
-        
-        return context
-    }
+    // Context assembly is handled by ContextAssemblyService.
     
     /// Resolve agent by ID with fallback logic
     /// - Parameter agentId: Agent ID to resolve
@@ -707,8 +559,4 @@ public enum AgentServiceError: Error, Sendable {
     case invalidConfiguration
     case executionFailed(String)
 }
-
-
-
-
 

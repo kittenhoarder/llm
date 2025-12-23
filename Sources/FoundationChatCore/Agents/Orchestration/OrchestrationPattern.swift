@@ -16,12 +16,15 @@ public protocol OrchestrationPattern: Sendable {
     ///   - agents: Available agents to use
     ///   - context: Shared context
     ///   - progressTracker: Optional progress tracker for visualization
+    ///   - checkpointCallback: Optional callback to save checkpoints (conversationId, messageId, checkpoint)
     /// - Returns: Result of execution
     func execute(
         task: AgentTask,
         agents: [any Agent],
         context: AgentContext,
-        progressTracker: OrchestrationProgressTracker?
+        progressTracker: OrchestrationProgressTracker?,
+        checkpointCallback: (@Sendable (WorkflowCheckpoint) async throws -> Void)?,
+        cancellationToken: WorkflowCancellationToken?
     ) async throws -> AgentResult
 }
 

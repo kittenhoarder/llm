@@ -33,3 +33,4 @@ echo "Successfully installed ${APP_NAME} to ${APPLICATIONS_DIR}"
 
 
 
+
